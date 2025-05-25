@@ -1376,19 +1376,19 @@
         .sidebar {
             position: fixed;
             top: var(--navbar-height);
-            left: -300px;
+            right: -300px; left: auto;
             width: 300px;
             height: calc(100vh - var(--navbar-height));
             background: var(--secondary-bg);
             border-right: 1px solid var(--border);
             overflow-y: auto;
-            transition: left 0.3s ease;
+            /* transition: left 0.3s ease; */
             z-index: 999;
             box-shadow: 2px 0 10px var(--shadow);
         }
 
         .sidebar.open {
-            left: 0;
+            right: 0; left: auto;
         }
 
         .sidebar-header {
@@ -1442,11 +1442,11 @@
             margin-left: auto;
             margin-right: auto;
             padding: 40px 30px;
-            transition: margin-left 0.3s ease;
+            /* transition: margin-left 0.3s ease; */
         }
 
         .main-content.sidebar-open {
-            margin-left: 300px;
+            /* margin-left: 300px; */
         }
 
         /* Typography */
@@ -1548,12 +1548,6 @@
         }
 
         /* Responsive Design */
-        @media (max-width: 1100px) {
-            .main-content.sidebar-open {
-                margin-left: 0;
-            }
-        }
-
         @media (max-width: 768px) {
             .navbar {
                 padding: 0 15px;
@@ -1731,9 +1725,15 @@
             const mainContent = document.getElementById('main-content');
             
             sidebar.classList.toggle('open');
-            if (window.innerWidth > 1100) {
-                mainContent.classList.toggle('sidebar-open');
-            }
+            // if (window.innerWidth > 1100) { // This condition might need adjustment based on new sidebar logic
+            //     mainContent.classList.toggle('sidebar-open');
+            // }
+            // For a right-side sidebar, you might not need to adjust main content margin,
+            // or you might adjust margin-right if the sidebar pushes content.
+            // The original instruction was to remove margin adjustments, so we'll stick to that.
+            // If the sidebar is an overlay, main content doesn't need to move.
+            // If it's meant to push content, then margin-right would be adjusted.
+            // Based on the CSS changes, the sidebar is likely an overlay now.
         }
 
         function navigateToChapter(chapterNum) {

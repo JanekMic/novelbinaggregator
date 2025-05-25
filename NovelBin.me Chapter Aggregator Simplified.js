@@ -1286,28 +1286,15 @@
     <title>${novelTitle}</title>
     <style>
         :root {
-            --primary-bg: #ffffff;
-            --secondary-bg: #f8f9fa;
-            --text-primary: #2c3e50;
-            --text-secondary: #6c757d;
-            --accent: #007bff;
-            --accent-hover: #0056b3;
-            --border: #dee2e6;
-            --shadow: rgba(0,0,0,0.1);
+            --primary-bg: #1a1a1a; /* Dark gray for main background */
+            --secondary-bg: #2d2d2d; /* Slightly lighter dark gray for secondary elements */
+            --text-primary: #e9ecef; /* Light gray/off-white for main text */
+            --text-secondary: #adb5bd; /* Medium gray for less important text */
+            --accent: #0d6efd; /* Muted blue accent */
+            --accent-hover: #0b5ed7; /* Darker accent for hover */
+            --border: #495057; /* Dark border color */
+            --shadow: rgba(0,0,0,0.3); /* Adjusted shadow for dark theme */
             --navbar-height: 60px;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --primary-bg: #1a1a1a;
-                --secondary-bg: #2d2d2d;
-                --text-primary: #e9ecef;
-                --text-secondary: #adb5bd;
-                --accent: #0d6efd;
-                --accent-hover: #0b5ed7;
-                --border: #495057;
-                --shadow: rgba(0,0,0,0.3);
-            }
         }
 
         * {
@@ -1317,12 +1304,13 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
             line-height: 1.7;
             color: var(--text-primary);
             background: var(--primary-bg);
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            min-height: 100vh; /* Ensure body takes full viewport height */
         }
 
         /* Modern Navigation */
@@ -1460,10 +1448,10 @@
         }
 
         .chapter-title {
-            font-size: 1.8rem;
-            font-weight: 600;
+            font-size: 2.2rem;
+            font-weight: 700;
             color: var(--text-primary);
-            margin: 60px 0 30px 0;
+            margin: 80px 0 40px 0;
             padding-bottom: 15px;
             border-bottom: 2px solid var(--border);
             scroll-margin-top: calc(var(--navbar-height) + 20px);
@@ -1476,7 +1464,7 @@
         }
 
         .chapter-content p {
-            margin-bottom: 20px;
+            margin-bottom: 25px;
             text-align: justify;
         }
 
@@ -1487,6 +1475,10 @@
             margin: 5px 10px 0 0;
             color: var(--accent);
             font-weight: 700;
+        }
+
+        .chapter-content em {
+            font-style: italic;
         }
 
         /* Metadata */
@@ -1658,7 +1650,7 @@
         ${chapters.map((chapter, index) => `
             <h2 class="chapter-title" id="chapter-${index + 1}">${chapter.chapterTitle}</h2>
             <div class="chapter-content">
-                ${chapter.content}
+                ${chapter.content.replace(/(".*?")/g, '<em>$1</em>')}
             </div>
         `).join('')}
 

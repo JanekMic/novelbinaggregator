@@ -591,11 +591,11 @@
             const oldCount = this.chapters.length;
             this.extractChapterList();
             const newCount = this.chapters.length;
-            
+
             // Reset selection when chapter list changes
             this.selectedRange = null;
             this.updateUI();
-            
+
             if (newCount !== oldCount) {
                 this.showNotification(`📱 Found ${newCount} chapters (${newCount > oldCount ? '+' + (newCount - oldCount) : newCount - oldCount} from before)`, 'success');
             } else {
@@ -606,44 +606,44 @@
         handleRangeSelection() {
             const fromInput = document.getElementById('range-from');
             const toInput = document.getElementById('range-to');
-            
+
             const fromValue = parseInt(fromInput.value);
             const toValue = parseInt(toInput.value);
-            
+
             logger.info(`Range selection attempt: from=${fromValue}, to=${toValue}`);
-            
+
             if (isNaN(fromValue) || isNaN(toValue)) {
                 this.showNotification('Please enter valid chapter numbers', 'error');
                 return;
             }
-            
+
             if (fromValue < 1 || toValue < 1 || fromValue > this.chapters.length || toValue > this.chapters.length) {
                 this.showNotification(`Please enter chapter numbers between 1 and ${this.chapters.length}`, 'error');
                 return;
             }
-            
+
             if (fromValue > toValue) {
                 this.showNotification('From chapter must be less than or equal to To chapter', 'error');
                 return;
             }
-            
+
             this.selectedRange = { from: fromValue, to: toValue };
             logger.info(`Range selection set:`, this.selectedRange);
             this.updateUI();
-            
+
             const count = toValue - fromValue + 1;
             this.showNotification(`📋 Selected chapters ${fromValue} to ${toValue} (${count} chapters)`, 'success');
         }
 
         selectAll() {
             this.selectedRange = null;
-            
+
             // Clear range inputs
             const fromInput = document.getElementById('range-from');
             const toInput = document.getElementById('range-to');
             if (fromInput) fromInput.value = '';
             if (toInput) toInput.value = '';
-            
+
             this.updateUI();
             this.showNotification('📚 Selected all chapters', 'success');
         }
@@ -711,7 +711,7 @@
             return `
                 <div id="settings-content" style="padding: 20px;">
                     <h3 style="margin: 0 0 20px 0; color: #e94560; font-size: 18px;">⚙️ Settings</h3>
-                    
+
                     <div style="display: grid; gap: 15px;">
                         <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
                             <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
@@ -991,7 +991,7 @@
             // Settings events
             const saveBtn = document.getElementById('save-settings');
             const resetBtn = document.getElementById('reset-settings');
-            
+
             if (saveBtn) {
                 saveBtn.addEventListener('click', (e) => {
                     e.target.style.transform = 'scale(0.95)';
@@ -1010,7 +1010,7 @@
                 });
             }
 
-            // Range selection events  
+            // Range selection events
             document.getElementById('select-range').addEventListener('click', (e) => {
                 e.target.style.transform = 'scale(0.95)';
                 setTimeout(() => e.target.style.transform = 'scale(1)', 100);
@@ -1080,7 +1080,7 @@
             settingsManager.set('baseDelay', baseDelay);
             settingsManager.set('maxRetries', maxRetries);
             settingsManager.set('enableLogging', enableLogging);
-            
+
             const oldCompactMode = settingsManager.get('compactMode');
             settingsManager.set('compactMode', compactMode);
 
@@ -1097,7 +1097,7 @@
 
         resetSettings() {
             settingsManager.reset();
-            
+
             document.getElementById('setting-batch-size').value = settingsManager.get('batchSize');
             document.getElementById('setting-base-delay').value = settingsManager.get('baseDelay');
             document.getElementById('setting-max-retries').value = settingsManager.get('maxRetries');
@@ -1111,7 +1111,7 @@
         switchView(view) {
             const mainView = document.getElementById('main-view');
             const settingsView = document.getElementById('settings-view');
-            
+
             if (view === 'settings') {
                 mainView.style.display = 'none';
                 settingsView.style.display = 'block';
@@ -1249,8 +1249,8 @@
                     if (failed.length > 0) {
                         this.showNotification(`Downloaded ${results.length}/${selectedChapters.length} chapters. ${failed.length} failed.`, 'error');
                     } else {
-                        const rangeText = this.selectedRange ? 
-                            `chapters ${this.selectedRange.from}-${this.selectedRange.to}` : 
+                        const rangeText = this.selectedRange ?
+                            `chapters ${this.selectedRange.from}-${this.selectedRange.to}` :
                             'all chapters';
                         this.showNotification(`Successfully downloaded ${rangeText} (${results.length} chapters)!`, 'success');
                     }
@@ -1269,7 +1269,7 @@
             const novelTitle = chapters[0]?.novelTitle || 'Unknown_Novel';
             const timestamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
             const contentHash = generateHash(chapters.map(ch => ch.chapterTitle).join('')).slice(0, 6);
-            
+
             return `${sanitizeFileName(novelTitle)}_${chapters.length}ch_${timestamp}_${contentHash}.html`;
         }
 
@@ -1552,28 +1552,28 @@
             .navbar {
                 padding: 0 15px;
             }
-            
+
             .nav-stats {
                 display: none;
             }
-            
+
             .main-content {
                 padding: 30px 20px;
             }
-            
+
             .book-title {
                 font-size: 2rem;
             }
-            
+
             .chapter-title {
                 font-size: 1.5rem;
             }
-            
+
             .nav-controls {
                 bottom: 20px;
                 right: 20px;
             }
-            
+
             .nav-btn {
                 width: 45px;
                 height: 45px;
@@ -1586,15 +1586,15 @@
                 width: 280px;
                 left: -280px;
             }
-            
+
             .main-content {
                 padding: 20px 15px;
             }
-            
+
             .book-title {
                 font-size: 1.6rem;
             }
-            
+
             .chapter-title {
                 font-size: 1.3rem;
             }
@@ -1605,13 +1605,13 @@
             .navbar, .sidebar, .nav-controls, .progress-bar {
                 display: none !important;
             }
-            
+
             .main-content {
                 margin: 0;
                 max-width: none;
                 padding: 0;
             }
-            
+
             .chapter-title {
                 page-break-before: always;
                 margin-top: 0;
@@ -1648,7 +1648,7 @@
     <!-- Main Content -->
     <main class="main-content" id="main-content">
         <h1 class="book-title">${novelTitle}</h1>
-        
+
         <div class="metadata">
             📖 Generated on ${new Date().toLocaleString()}<br>
             📊 ${chapters.length} chapters • 🚀 NovelBin Aggregator v2.4<br>
@@ -1723,7 +1723,7 @@
             sidebarOpen = !sidebarOpen;
             const sidebar = document.getElementById('sidebar');
             const mainContent = document.getElementById('main-content');
-            
+
             sidebar.classList.toggle('open');
             // if (window.innerWidth > 1100) { // This condition might need adjustment based on new sidebar logic
             //     mainContent.classList.toggle('sidebar-open');
@@ -1743,7 +1743,7 @@
                 element.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 updateNavButtons();
                 updateActiveChapter();
-                
+
                 if (window.innerWidth <= 1100 && sidebarOpen) {
                     setTimeout(() => toggleSidebar(), 300);
                 }
@@ -1838,12 +1838,12 @@
             if (this.dragHandler) {
                 this.dragHandler.destroy();
             }
-            
+
             const ui = document.getElementById('novelbin-aggregator');
             if (ui) {
                 ui.remove();
             }
-            
+
             const toggleBtn = document.getElementById('novelbin-toggle');
             if (toggleBtn) {
                 toggleBtn.remove();

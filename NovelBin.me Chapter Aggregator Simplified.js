@@ -126,6 +126,13 @@
                 this.logs = this.logs.slice(-this.maxLogs);
             }
 
+            // Notify listeners that a new log entry has been added
+            try {
+                document.dispatchEvent(new CustomEvent('novelbin:newLog', { detail: logEntry }));
+            } catch (e) {
+                console.error('Failed to dispatch log event', e);
+            }
+
             const consoleMsg = `[${timestamp}] [${level}] ${message}`;
             if (data) {
                 console[level.toLowerCase()](consoleMsg, data);
@@ -1057,6 +1064,24 @@
                 setTimeout(() => e.target.style.transform = 'scale(1)', 100);
                 this.toggleLogs();
             });
+
+            // Listen for log updates to refresh the container when visible
+            if (this.handleLogEvent) {
+                document.removeEventListener('novelbin:newLog', this.handleLogEvent);
+            }
+            this.handleLogEvent = this.updateLogDisplay.bind(this);
+            document.addEventListener('novelbin:newLog', this.handleLogEvent);
+        }
+
+        updateLogDisplay() {
+            const logContainer = document.getElementById('log-container');
+            if (!logContainer || logContainer.style.display === 'none') return;
+
+            const isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 5;
+            logContainer.textContent = logger.getLogs();
+            if (isAtBottom) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
         }
 
         saveSettings() {
@@ -1825,9 +1850,9 @@
 
             if (logContainer.style.display === 'none') {
                 logContainer.style.display = 'block';
-                logContainer.textContent = logger.getLogs();
-                toggleBtn.textContent = '📋 Hide Logs';
+                this.updateLogDisplay();
                 logContainer.scrollTop = logContainer.scrollHeight;
+                toggleBtn.textContent = '📋 Hide Logs';
             } else {
                 logContainer.style.display = 'none';
                 toggleBtn.textContent = '📋 Toggle Logs';
@@ -1837,6 +1862,10 @@
         destroy() {
             if (this.dragHandler) {
                 this.dragHandler.destroy();
+            }
+
+            if (this.handleLogEvent) {
+                document.removeEventListener('novelbin:newLog', this.handleLogEvent);
             }
 
             const ui = document.getElementById('novelbin-aggregator');

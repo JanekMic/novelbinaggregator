@@ -42,15 +42,17 @@
         return div.firstChild;
     }
 
-    function generateHash(str) {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            const char = str.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash;
-        }
-        return Math.abs(hash).toString(36);
+function generateHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
     }
+    return Math.abs(hash).toString(36);
+}
+
+    const LOG_EVENT = 'novelbin:newLog';
 
     // ================== SETTINGS MANAGEMENT ==================
     class SettingsManager {
@@ -128,7 +130,7 @@
 
             // Notify listeners that a new log entry has been added
             try {
-                document.dispatchEvent(new CustomEvent('novelbin:newLog', { detail: logEntry }));
+                document.dispatchEvent(new CustomEvent(LOG_EVENT, { detail: logEntry }));
             } catch (e) {
                 console.error('Failed to dispatch log event', e);
             }
@@ -1067,10 +1069,10 @@
 
             // Listen for log updates to refresh the container when visible
             if (this.handleLogEvent) {
-                document.removeEventListener('novelbin:newLog', this.handleLogEvent);
+                document.removeEventListener(LOG_EVENT, this.handleLogEvent);
             }
             this.handleLogEvent = this.updateLogDisplay.bind(this);
-            document.addEventListener('novelbin:newLog', this.handleLogEvent);
+            document.addEventListener(LOG_EVENT, this.handleLogEvent);
         }
 
         updateLogDisplay() {
@@ -1865,7 +1867,7 @@
             }
 
             if (this.handleLogEvent) {
-                document.removeEventListener('novelbin:newLog', this.handleLogEvent);
+                document.removeEventListener(LOG_EVENT, this.handleLogEvent);
             }
 
             const ui = document.getElementById('novelbin-aggregator');

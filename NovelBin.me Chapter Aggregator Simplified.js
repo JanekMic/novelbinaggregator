@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NovelBin.me Chapter Aggregator Simplified
 // @namespace    http://tampermonkey.net/
-// @version      2.4.0
+// @version      2.5.0
 // @description  Simplified novel chapter aggregator with modern HTML output
 // @author       Assistant
 // @match        https://novelbin.me/*
@@ -85,6 +85,31 @@
         success: ICONS.success,
         info: ICONS.info,
         error: ICONS.cancel
+    });
+
+    const THEME = Object.freeze({
+        panel: '#151a23',
+        panelElevated: '#1f2736',
+        highlight: '#222c3d',
+        border: '#2d3648',
+        borderAccent: 'rgba(233, 69, 96, 0.45)',
+        accent: '#e94560',
+        accentHover: '#ff6b81',
+        accentSoft: 'rgba(233, 69, 96, 0.12)',
+        accentGradient: 'linear-gradient(135deg, #e94560 0%, #ff6b81 100%)',
+        headerGradient: 'linear-gradient(120deg, rgba(233, 69, 96, 0.35) 0%, rgba(120, 129, 198, 0.25) 100%)',
+        textPrimary: '#f4f6fb',
+        textSecondary: '#bac3d4',
+        textMuted: '#8d96a7',
+        shadow: '0 30px 60px rgba(8, 12, 24, 0.55)',
+        successGradient: 'linear-gradient(135deg, #4CAF50, #3f9d4a)',
+        warningGradient: 'linear-gradient(135deg, #ffa000, #f57c00)',
+        dangerGradient: 'linear-gradient(135deg, #f44336, #d32f2f)',
+        infoGradient: 'linear-gradient(135deg, #29b6f6, #4285f4)',
+        neutralGradient: 'linear-gradient(135deg, #2b3243, #232a39)',
+        inputBackground: 'rgba(16, 21, 32, 0.85)',
+        inputBorder: '#323b4d',
+        logBackground: 'rgba(13, 18, 27, 0.85)'
     });
 
     // ================== SETTINGS MANAGEMENT ==================
@@ -172,10 +197,10 @@
         info(message, data) { this.log('INFO', message, data); }
         warn(message, data) { this.log('WARN', message, data); }
         error(message, data) { this.log('ERROR', message, data); }
-        debug(message, data) { this.log('DEBUG', message, data); }        setEnabled(enabled) {
+        debug(message, data) { this.log('DEBUG', message, data); }
 
+        setEnabled(enabled) {
             this.enabled = enabled;
-
         }
 
 
@@ -233,12 +258,19 @@
             this.batchSize = settingsManager.get('batchSize');
             this.isCancelled = false;
             this.activeRequests = new Set();
+            this.challengeHandler = null;
+            this.cloudflareBypassMode = false;
+            this.cloudflareNotified = false;
         }
 
         updateSettings() {
             this.baseDelay = settingsManager.get('baseDelay');
             this.maxRetries = settingsManager.get('maxRetries');
             this.batchSize = settingsManager.get('batchSize');
+        }
+
+        setChallengeHandler(handler) {
+            this.challengeHandler = handler;
         }
 
         cancel() {
@@ -259,57 +291,165 @@
             this.updateSettings();
         }
 
-        async fetchWithRetry(url, retries = 0) {
-            if (this.isCancelled) {
-                throw new Error('Download cancelled by user');
+        notifyChallenge() {
+            if (this.challengeHandler && !this.cloudflareNotified) {
+                try {
+                    this.challengeHandler();
+                } catch (error) {
+                    console.warn('Cloudflare challenge handler error', error);
+                }
+                this.cloudflareNotified = true;
             }
+        }
 
+        detectCloudflare(html) {
+            if (!html) return false;
+            const lower = html.toLowerCase();
+            return lower.includes('cf-browser-verification') ||
+                lower.includes('cf-chl-bypass') ||
+                lower.includes('/cdn-cgi/challenge-platform/') ||
+                lower.includes('checking if the site connection is secure') ||
+                lower.includes('attention required') ||
+                lower.includes('just a moment...');
+        }
+
+        shouldFallbackToBrowser(error) {
+            if (!error) return false;
+            if (error.isCloudflare) return true;
+            if (error.status && [403, 429, 503].includes(error.status)) return true;
+            const message = (error.message || '').toLowerCase();
+            return message.includes('cloudflare') || message.includes('clearance') || message.includes('/cdn-cgi/');
+        }
+
+        async performGMRequest(url) {
             return new Promise((resolve, reject) => {
-                logger.info(`Fetching chapter: ${url} (attempt ${retries + 1})`);
-
                 const request = GM_xmlhttpRequest({
                     method: 'GET',
-                    url: url,
+                    url,
                     timeout: 30000,
+                    headers: {
+                        'User-Agent': navigator.userAgent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': navigator.language || 'en-US,en;q=0.9',
+                        'Referer': window.location.href
+                    },
+                    overrideMimeType: 'text/html; charset=utf-8',
+                    anonymous: false,
                     onload: (response) => {
                         this.activeRequests.delete(request);
-                        if (this.isCancelled) {
-                            reject(new Error('Download cancelled by user'));
-                            return;
-                        }
-
                         if (response.status === 200) {
                             resolve(response.responseText);
                         } else {
-                            reject(new Error(`HTTP ${response.status}: ${response.statusText}`));
+                            const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+                            error.status = response.status;
+                            reject(error);
                         }
                     },
                     onerror: (error) => {
                         this.activeRequests.delete(request);
-                        reject(new Error(`Network error: ${error}`));
+                        const err = new Error(`Network error: ${error?.error || 'unknown'}`);
+                        reject(err);
                     },
                     ontimeout: () => {
                         this.activeRequests.delete(request);
-                        reject(new Error('Request timeout'));
+                        const err = new Error('Request timeout');
+                        err.status = 408;
+                        reject(err);
                     }
                 });
 
                 this.activeRequests.add(request);
-            }).catch(async (error) => {
-                logger.error(`Failed to fetch ${url}`, { error: error.message, attempt: retries + 1 });
+            });
+        }
 
-                if (this.isCancelled) {
+        async performBrowserFetch(url) {
+            const controller = new AbortController();
+            this.activeRequests.add(controller);
+            try {
+                const response = await fetch(url, {
+                    credentials: 'include',
+                    mode: 'cors',
+                    signal: controller.signal,
+                    headers: {
+                        'User-Agent': navigator.userAgent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': navigator.language || 'en-US,en;q=0.9',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    },
+                    referrer: window.location.href,
+                    referrerPolicy: 'strict-origin-when-cross-origin'
+                });
+
+                this.activeRequests.delete(controller);
+
+                if (!response.ok) {
+                    const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    error.status = response.status;
                     throw error;
+                }
+
+                return await response.text();
+            } catch (error) {
+                this.activeRequests.delete(controller);
+                if (error.name === 'AbortError') {
+                    const abortError = new Error('Request cancelled');
+                    abortError.isCancelled = true;
+                    throw abortError;
+                }
+                throw error;
+            }
+        }
+
+        async fetchWithRetry(url, retries = 0, useFallback = this.cloudflareBypassMode) {
+            if (this.isCancelled) {
+                throw new Error('Download cancelled by user');
+            }
+
+            try {
+                logger.info(`Fetching chapter: ${url} (attempt ${retries + 1}${useFallback ? ' • fallback' : ''})`);
+                const html = useFallback ? await this.performBrowserFetch(url) : await this.performGMRequest(url);
+
+                if (this.detectCloudflare(html)) {
+                    const challengeError = new Error('Cloudflare challenge detected');
+                    challengeError.isCloudflare = true;
+                    challengeError.status = 403;
+                    challengeError.usedFallback = useFallback;
+                    throw challengeError;
+                }
+
+                return html;
+            } catch (error) {
+                if (error?.isCancelled || this.isCancelled) {
+                    throw error;
+                }
+
+                logger.error(`Failed to fetch ${url}`, {
+                    error: error.message,
+                    attempt: retries + 1,
+                    fallback: useFallback
+                });
+
+                if (!useFallback && this.shouldFallbackToBrowser(error)) {
+                    logger.warn('Cloudflare protection detected, switching to compatibility mode', { url });
+                    this.cloudflareBypassMode = true;
+                    this.notifyChallenge();
+                    return this.fetchWithRetry(url, retries, true);
+                }
+
+                if (useFallback && error.isCloudflare) {
+                    error.code = 'CLOUDFLARE_BLOCKED';
                 }
 
                 if (retries < this.maxRetries) {
                     const delay = this.baseDelay * Math.pow(1.5, retries);
                     logger.info(`Retrying in ${delay}ms...`);
                     await sleep(delay);
-                    return this.fetchWithRetry(url, retries + 1);
+                    return this.fetchWithRetry(url, retries + 1, useFallback);
                 }
+
                 throw error;
-            });
+            }
         }
 
         extractChapterContent(html, chapterUrl) {
@@ -506,150 +646,150 @@
     }
 
     // ================== DRAG HANDLER ==================
-        class DragHandler {
-
+    class DragHandler {
         constructor(element, handleElement) {
-
             this.element = element;
-
             this.handle = handleElement;
-
             this.isDragging = false;
-
             this.offset = { x: 0, y: 0 };
-
-
+            this.margin = 16;
+            this.needsEnsureVisible = false;
 
             this.onMouseDownHandler = this.onMouseDown.bind(this);
-
             this.onMouseMoveHandler = this.onMouseMove.bind(this);
-
             this.onMouseUpHandler = this.onMouseUp.bind(this);
-
-
+            this.onResizeHandler = this.onResize.bind(this);
 
             this.init();
-
         }
-
-
 
         init() {
-
             if (!this.handle) {
-
                 return;
-
             }
-
-
 
             this.handle.style.cursor = 'move';
-
             this.handle.addEventListener('mousedown', this.onMouseDownHandler);
-
             document.addEventListener('mousemove', this.onMouseMoveHandler);
-
             document.addEventListener('mouseup', this.onMouseUpHandler);
-
+            window.addEventListener('resize', this.onResizeHandler, { passive: true });
         }
-
-
 
         onMouseDown(event) {
-
             event.preventDefault();
-
             this.isDragging = true;
-
             const rect = this.element.getBoundingClientRect();
-
             this.offset.x = event.clientX - rect.left;
-
             this.offset.y = event.clientY - rect.top;
-
             this.element.style.transition = 'none';
-
         }
-
-
 
         onMouseMove(event) {
-
             if (!this.isDragging) {
-
                 return;
-
             }
-
-
 
             const x = event.clientX - this.offset.x;
-
             const y = event.clientY - this.offset.y;
 
+            const maxX = Math.max(this.margin, window.innerWidth - this.element.offsetWidth - this.margin);
+            const maxY = Math.max(this.margin, window.innerHeight - this.element.offsetHeight - this.margin);
 
-
-            const maxX = window.innerWidth - this.element.offsetWidth;
-
-            const maxY = window.innerHeight - this.element.offsetHeight;
-
-
-
-            const boundedX = Math.max(0, Math.min(x, maxX));
-
-            const boundedY = Math.max(0, Math.min(y, maxY));
-
-
+            const boundedX = Math.min(Math.max(x, this.margin), maxX);
+            const boundedY = Math.min(Math.max(y, this.margin), maxY);
 
             this.element.style.left = `${boundedX}px`;
-
             this.element.style.top = `${boundedY}px`;
-
             this.element.style.right = 'auto';
-
         }
-
-
 
         onMouseUp() {
-
             if (!this.isDragging) {
-
                 return;
-
             }
 
-
-
             this.isDragging = false;
-
             this.element.style.transition = '';
-
+            this.keepInViewport();
         }
 
+        onResize() {
+            if (!this.element) {
+                return;
+            }
 
+            if (this.element.offsetParent) {
+                this.keepInViewport();
+            } else {
+                this.needsEnsureVisible = true;
+            }
+        }
+
+        keepInViewport() {
+            if (!this.element) {
+                return;
+            }
+
+            const rect = this.element.getBoundingClientRect();
+            const width = rect.width || this.element.offsetWidth;
+            const height = rect.height || this.element.offsetHeight;
+
+            let left = rect.left;
+            let top = rect.top;
+
+            if (this.element.style.left) {
+                const parsedLeft = parseFloat(this.element.style.left);
+                if (!Number.isNaN(parsedLeft)) {
+                    left = parsedLeft;
+                }
+            } else if (this.element.style.right && this.element.style.right !== 'auto') {
+                const parsedRight = parseFloat(this.element.style.right);
+                if (!Number.isNaN(parsedRight)) {
+                    left = window.innerWidth - width - parsedRight;
+                }
+            }
+
+            if (this.element.style.top) {
+                const parsedTop = parseFloat(this.element.style.top);
+                if (!Number.isNaN(parsedTop)) {
+                    top = parsedTop;
+                }
+            }
+
+            const maxLeft = Math.max(this.margin, window.innerWidth - width - this.margin);
+            const maxTop = Math.max(this.margin, window.innerHeight - height - this.margin);
+
+            const clampedLeft = Math.min(Math.max(left, this.margin), maxLeft);
+            const clampedTop = Math.min(Math.max(top, this.margin), maxTop);
+
+            this.element.style.left = `${clampedLeft}px`;
+            this.element.style.top = `${clampedTop}px`;
+            this.element.style.right = 'auto';
+            this.needsEnsureVisible = false;
+        }
+
+        ensureVisible(force = false) {
+            if (force) {
+                this.keepInViewport();
+                return;
+            }
+
+            if (this.needsEnsureVisible) {
+                this.keepInViewport();
+            }
+        }
 
         destroy() {
-
             if (!this.handle) {
-
                 return;
-
             }
 
-
-
             this.handle.removeEventListener('mousedown', this.onMouseDownHandler);
-
             document.removeEventListener('mousemove', this.onMouseMoveHandler);
-
             document.removeEventListener('mouseup', this.onMouseUpHandler);
-
+            window.removeEventListener('resize', this.onResizeHandler);
             this.isDragging = false;
-
         }
-
     }
 
 
@@ -659,11 +799,13 @@
         constructor() {
             this.chapters = [];
             this.extractor = new ChapterExtractor();
+            this.extractor.setChallengeHandler(() => this.handleCloudflareChallenge());
             this.isProcessing = false;
             this.isVisible = false;
             this.dragHandler = null;
             this.currentView = 'main';
             this.selectedRange = null; // {from: number, to: number} or null for all
+            this.hasShownCloudflareNotice = false;
         }
 
         init() {
@@ -673,7 +815,7 @@
                 return;
             }
 
-            logger.info('Initializing NovelBin Chapter Aggregator Simplified v2.4');
+            logger.info('Initializing NovelBin Chapter Aggregator Simplified v2.5');
             this.extractChapterList();
             this.createToggleButton();
             this.createUI();
@@ -688,131 +830,80 @@
         }
 
         createToggleButton() {
+            const defaultShadow = '0 24px 48px rgba(233, 69, 96, 0.42)';
+            const hoverShadow = '0 28px 56px rgba(233, 69, 96, 0.55)';
+            const activeShadow = '0 30px 60px rgba(233, 69, 96, 0.62)';
 
             const toggleBtn = createElementFromHTML(`
-
                 <button id="novelbin-toggle" style="
-
                     position: fixed;
-
-                    top: 20px;
-
-                    right: 20px;
-
+                    top: 24px;
+                    right: 24px;
                     z-index: 10001;
-
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-
-                    color: white;
-
-                    border: none;
-
-                    border-radius: 50%;
-
-                    width: 60px;
-
-                    height: 60px;
-
+                    background: ${THEME.accentGradient};
+                    color: ${THEME.textPrimary};
+                    border: 1px solid ${THEME.border};
+                    border-radius: 20px;
+                    width: 64px;
+                    height: 64px;
                     cursor: pointer;
-
-                    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
-
-                    font-size: 24px;
-
-                    transition: all 0.3s ease;
-
+                    box-shadow: ${defaultShadow};
+                    font-size: 26px;
+                    transition: transform 0.25s ease, box-shadow 0.25s ease, filter 0.25s ease;
                     display: flex;
-
                     align-items: center;
-
                     justify-content: center;
-
+                    backdrop-filter: blur(12px);
                 " title="Toggle Chapter Aggregator" aria-label="Toggle chapter aggregator" aria-pressed="false">
-
                     <span aria-hidden="true">${ICONS.aggregator}</span>
-
                 </button>
-
             `);
 
-
+            toggleBtn.dataset.defaultShadow = defaultShadow;
+            toggleBtn.dataset.activeShadow = activeShadow;
 
             toggleBtn.addEventListener('mouseenter', () => {
-
-                toggleBtn.style.transform = 'scale(1.1)';
-
-                toggleBtn.style.boxShadow = '0 6px 25px rgba(102, 126, 234, 0.6)';
-
+                toggleBtn.style.transform = 'translateY(-2px) scale(1.05)';
+                toggleBtn.style.boxShadow = hoverShadow;
             });
-
-
 
             toggleBtn.addEventListener('mouseleave', () => {
-
-                toggleBtn.style.transform = 'scale(1)';
-
-                toggleBtn.style.boxShadow = '0 4px 20px rgba(102, 126, 234, 0.4)';
-
+                toggleBtn.style.transform = this.isVisible ? 'scale(1.03)' : 'scale(1)';
+                toggleBtn.style.boxShadow = this.isVisible ? activeShadow : defaultShadow;
             });
-
-
 
             toggleBtn.addEventListener('click', () => {
-
                 this.toggleUI();
-
             });
 
-
-
             document.body.appendChild(toggleBtn);
-
             this.updateToggleButtonState();
-
         }
 
 
 
         toggleUI() {
-
             const ui = document.getElementById('novelbin-aggregator');
 
-
-
             if (ui) {
-
                 if (this.isVisible) {
-
                     ui.style.display = 'none';
-
                     this.isVisible = false;
-
                 } else {
-
                     ui.style.display = 'block';
-
                     this.isVisible = true;
-
-                    this.updateToggleButtonState();
-
+                    if (this.dragHandler) {
+                        this.dragHandler.ensureVisible(true);
+                    }
                 }
 
-
-
                 this.updateToggleButtonState();
-
             } else if (this.isValidPage()) {
-
                 this.createUI();
-
             } else {
-
                 this.isVisible = false;
-
                 this.updateToggleButtonState();
-
             }
-
         }
 
 
@@ -835,6 +926,19 @@
 
             toggleBtn.classList.toggle('active', this.isVisible);
 
+            const defaultShadow = toggleBtn.dataset.defaultShadow || '0 24px 48px rgba(233, 69, 96, 0.42)';
+            const activeShadow = toggleBtn.dataset.activeShadow || '0 30px 60px rgba(233, 69, 96, 0.62)';
+
+            if (this.isVisible) {
+                toggleBtn.style.transform = 'scale(1.03)';
+                toggleBtn.style.boxShadow = activeShadow;
+                toggleBtn.style.filter = 'saturate(1.1)';
+            } else {
+                toggleBtn.style.transform = 'scale(1)';
+                toggleBtn.style.boxShadow = defaultShadow;
+                toggleBtn.style.filter = 'saturate(1)';
+            }
+
         }
 
 
@@ -854,6 +958,16 @@
             } else {
                 this.showNotification('${NOTIFICATION_ICONS.info} Chapter count unchanged', 'info');
             }
+        }
+
+        handleCloudflareChallenge() {
+            if (this.hasShownCloudflareNotice) {
+                return;
+            }
+
+            this.hasShownCloudflareNotice = true;
+            logger.warn('Cloudflare compatibility mode enabled');
+            this.showNotification(`${ICONS.info} Cloudflare protection detected. Switched to compatibility mode. Downloads may take slightly longer.`, 'info');
         }
 
         handleRangeSelection() {
@@ -911,32 +1025,35 @@
         }
 
         showNotification(message, type = 'info') {
+            const theme = THEME;
             const colors = {
-                success: 'linear-gradient(135deg, #4CAF50, #45a049)',
-                info: 'linear-gradient(135deg, #FF9800, #F57400)',
-                error: 'linear-gradient(135deg, #f44336, #d32f2f)'
+                success: theme.successGradient,
+                info: theme.infoGradient,
+                error: theme.dangerGradient
             };
 
             const notification = createElementFromHTML(`
                 <div style="
                     position: fixed;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
+                    top: 110px;
+                    right: 96px;
                     background: ${colors[type]};
-                    color: white;
-                    padding: 15px 25px;
-                    border-radius: 10px;
-                    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+                    color: ${theme.textPrimary};
+                    padding: 14px 22px;
+                    border-radius: 14px;
+                    border: 1px solid ${theme.border};
+                    box-shadow: 0 24px 50px rgba(8, 12, 24, 0.45);
                     z-index: 10002;
                     font-weight: 600;
                     font-family: 'Segoe UI', system-ui, sans-serif;
+                    letter-spacing: 0.3px;
+                    min-width: 240px;
                 ">
                     ${message}
                 </div>
             `);
             document.body.appendChild(notification);
-            setTimeout(() => notification.remove(), type === 'error' ? 4000 : 2500);
+            setTimeout(() => notification.remove(), type === 'error' ? 4000 : 2600);
         }
 
         extractChapterList() {
@@ -961,69 +1078,72 @@
         }
 
         createSettingsModal() {
+            const theme = THEME;
             return `
-                <div id="settings-content" style="padding: 20px;">
-                    <h3 style="margin: 0 0 20px 0; color: #e94560; font-size: 18px;">⚙️ Settings</h3>
+                <div id="settings-content" style="padding: 22px; background: ${theme.panel}; color: ${theme.textPrimary}; border-radius: 18px;">
+                    <h3 style="margin: 0 0 20px 0; color: ${theme.accent}; font-size: 18px; letter-spacing: 0.5px;">⚙️ Settings</h3>
 
                     <div style="display: grid; gap: 15px;">
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
+                        <div style="background: ${theme.panelElevated}; padding: 16px; border-radius: 12px; border: 1px solid ${theme.border}; box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);">
+                            <label style="display: block; color: ${theme.textSecondary}; margin-bottom: 8px; font-weight: 600;">
                                 📦 Batch Size (simultaneous downloads)
                             </label>
                             <input type="number" id="setting-batch-size" min="1" max="20" value="${settingsManager.get('batchSize')}" style="
-                                width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                border-radius: 4px; color: #e0e0e0; font-size: 14px;
+                                width: 100%; padding: 10px; background: ${theme.inputBackground}; border: 1px solid ${theme.inputBorder};
+                                border-radius: 10px; color: ${theme.textPrimary}; font-size: 14px; outline: none;
                             ">
-                            <small style="color: #b0b0b0; font-size: 12px;">Lower values are gentler on servers</small>
+                            <small style="color: ${theme.textMuted}; font-size: 12px;">Lower values are gentler on servers</small>
                         </div>
 
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
+                        <div style="background: ${theme.panelElevated}; padding: 16px; border-radius: 12px; border: 1px solid ${theme.border}; box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);">
+                            <label style="display: block; color: ${theme.textSecondary}; margin-bottom: 8px; font-weight: 600;">
                                 ⏱️ Delay Between Requests (ms)
                             </label>
                             <input type="number" id="setting-base-delay" min="500" max="10000" step="500" value="${settingsManager.get('baseDelay')}" style="
-                                width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                border-radius: 4px; color: #e0e0e0; font-size: 14px;
+                                width: 100%; padding: 10px; background: ${theme.inputBackground}; border: 1px solid ${theme.inputBorder};
+                                border-radius: 10px; color: ${theme.textPrimary}; font-size: 14px; outline: none;
                             ">
                         </div>
 
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
+                        <div style="background: ${theme.panelElevated}; padding: 16px; border-radius: 12px; border: 1px solid ${theme.border}; box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);">
+                            <label style="display: block; color: ${theme.textSecondary}; margin-bottom: 8px; font-weight: 600;">
                                 🔄 Max Retry Attempts
                             </label>
                             <input type="number" id="setting-max-retries" min="1" max="10" value="${settingsManager.get('maxRetries')}" style="
-                                width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                border-radius: 4px; color: #e0e0e0; font-size: 14px;
+                                width: 100%; padding: 10px; background: ${theme.inputBackground}; border: 1px solid ${theme.inputBorder};
+                                border-radius: 10px; color: ${theme.textPrimary}; font-size: 14px; outline: none;
                             ">
                         </div>
 
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: flex; align-items: center; color: #e0e0e0; font-weight: 600; cursor: pointer;">
+                        <div style="background: ${theme.panelElevated}; padding: 16px; border-radius: 12px; border: 1px solid ${theme.border}; box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);">
+                            <label style="display: flex; align-items: center; color: ${theme.textSecondary}; font-weight: 600; cursor: pointer;">
                                 <input type="checkbox" id="setting-enable-logging" ${settingsManager.get('enableLogging') ? 'checked' : ''} style="
-                                    margin-right: 10px; transform: scale(1.2); accent-color: #667eea;
+                                    margin-right: 10px; transform: scale(1.2); accent-color: ${theme.accent};
                                 ">
                                 📝 Enable Detailed Logging
                             </label>
                         </div>
 
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: flex; align-items: center; color: #e0e0e0; font-weight: 600; cursor: pointer;">
+                        <div style="background: ${theme.panelElevated}; padding: 16px; border-radius: 12px; border: 1px solid ${theme.border}; box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);">
+                            <label style="display: flex; align-items: center; color: ${theme.textSecondary}; font-weight: 600; cursor: pointer;">
                                 <input type="checkbox" id="setting-compact-mode" ${settingsManager.get('compactMode') ? 'checked' : ''} style="
-                                    margin-right: 10px; transform: scale(1.2); accent-color: #667eea;
+                                    margin-right: 10px; transform: scale(1.2); accent-color: ${theme.accent};
                                 ">
                                 📱 Compact Interface Mode
                             </label>
                         </div>
                     </div>
 
-                    <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <div style="display: flex; gap: 12px; margin-top: 24px;">
                         <button id="save-settings" style="
-                            flex: 1; padding: 12px; background: linear-gradient(45deg, #4CAF50, #45a049);
-                            color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
+                            flex: 1; padding: 12px; background: ${THEME.successGradient};
+                            color: ${theme.textPrimary}; border: 1px solid rgba(76, 175, 80, 0.35); border-radius: 12px; cursor: pointer; font-weight: 600;
+                            transition: transform 0.2s ease, box-shadow 0.2s ease;
                         ">💾 Save Settings</button>
                         <button id="reset-settings" style="
-                            flex: 1; padding: 12px; background: linear-gradient(45deg, #f44336, #d32f2f);
-                            color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
+                            flex: 1; padding: 12px; background: ${THEME.dangerGradient};
+                            color: ${theme.textPrimary}; border: 1px solid rgba(244, 67, 54, 0.45); border-radius: 12px; cursor: pointer; font-weight: 600;
+                            transition: transform 0.2s ease, box-shadow 0.2s ease;
                         ">🔄 Reset Defaults</button>
                     </div>
                 </div>
@@ -1040,168 +1160,192 @@
             }
 
             const isCompact = settingsManager.get('compactMode');
-            const maxHeight = Math.min(window.innerHeight * 0.8, 600);
+            const theme = THEME;
+            const maxHeight = Math.min(window.innerHeight * 0.82, isCompact ? 540 : 640);
 
             const ui = createElementFromHTML(`
                 <div id="novelbin-aggregator" style="
                     position: fixed;
-                    top: 50px;
-                    right: 20px;
-                    width: ${isCompact ? '320px' : '380px'};
+                    top: 72px;
+                    right: 30px;
+                    width: ${isCompact ? '320px' : '390px'};
                     max-height: ${maxHeight}px;
-                    background: linear-gradient(145deg, #1a1a2e, #16213e);
-                    border: 1px solid #0f3460;
-                    border-radius: 15px;
-                    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+                    background: linear-gradient(160deg, rgba(21, 26, 36, 0.97) 0%, rgba(16, 21, 30, 0.97) 100%);
+                    border: 1px solid ${theme.border};
+                    border-radius: 22px;
+                    box-shadow: ${theme.shadow};
                     z-index: 10000;
-                    font-family: 'Segoe UI', system-ui, sans-serif;
+                    font-family: 'Segoe UI', 'Roboto', system-ui, sans-serif;
                     font-size: ${isCompact ? '13px' : '14px'};
-                    color: #e94560;
+                    color: ${theme.textPrimary};
                     overflow: hidden;
-                    transition: all 0.3s ease;
+                    transition: transform 0.25s ease, opacity 0.25s ease;
                     display: flex;
                     flex-direction: column;
+                    backdrop-filter: blur(18px);
                 ">
                     <div id="aggregator-header" style="
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        color: white;
-                        padding: ${isCompact ? '12px 15px' : '15px 20px'};
+                        background: ${theme.headerGradient};
+                        color: ${theme.textPrimary};
+                        padding: ${isCompact ? '14px 18px' : '18px 24px'};
                         display: flex;
                         justify-content: space-between;
                         align-items: center;
                         cursor: move;
                         user-select: none;
                         flex-shrink: 0;
+                        border-bottom: 1px solid ${theme.border};
+                        gap: 12px;
                     ">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <span style="font-size: ${isCompact ? '18px' : '20px'};">📚</span>
-                            <h3 style="margin: 0; font-size: ${isCompact ? '14px' : '16px'}; font-weight: 600;">Chapter Aggregator v2.4</h3>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: ${isCompact ? '20px' : '22px'};">📚</span>
+                            <div>
+                                <h3 style="margin: 0; font-size: ${isCompact ? '15px' : '17px'}; font-weight: 600; letter-spacing: 0.4px;">Chapter Aggregator v2.5</h3>
+                                <small style="color: ${theme.textMuted}; font-size: ${isCompact ? '11px' : '12px'};">Streamlined for NovelBin</small>
+                            </div>
                         </div>
                         <div style="display: flex; gap: 8px;">
                             <button id="settings-btn" style="
-                                background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer;
-                                font-size: 14px; width: 28px; height: 28px; border-radius: 50%;
-                                display: flex; align-items: center; justify-content: center; transition: background 0.2s;
+                                background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); color: ${theme.textPrimary}; cursor: pointer;
+                                font-size: 15px; width: 32px; height: 32px; border-radius: 10px;
+                                display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease, background 0.2s ease;
+                                backdrop-filter: blur(8px);
                             " title="Settings">⚙️</button>
                             <button id="refresh-chapters" style="
-                                background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer;
-                                font-size: 14px; width: 28px; height: 28px; border-radius: 50%;
-                                display: flex; align-items: center; justify-content: center; transition: background 0.2s;
+                                background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); color: ${theme.textPrimary}; cursor: pointer;
+                                font-size: 15px; width: 32px; height: 32px; border-radius: 10px;
+                                display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease, background 0.2s ease;
+                                backdrop-filter: blur(8px);
                             " title="Refresh chapter list">🔄</button>
                             <button id="minimize-aggregator" style="
-                                background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer;
-                                font-size: 16px; width: 28px; height: 28px; border-radius: 50%;
-                                display: flex; align-items: center; justify-content: center; transition: background 0.2s;
+                                background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); color: ${theme.textPrimary}; cursor: pointer;
+                                font-size: 18px; width: 32px; height: 32px; border-radius: 10px;
+                                display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease, background 0.2s ease;
+                                backdrop-filter: blur(8px);
                             " title="Minimize">−</button>
                         </div>
                     </div>
 
                     <div id="main-content" style="
-                        padding: ${isCompact ? '15px' : '20px'};
+                        padding: ${isCompact ? '16px' : '22px'};
                         overflow-y: auto;
                         flex: 1;
                         display: flex;
                         flex-direction: column;
-                        gap: ${isCompact ? '12px' : '15px'};
+                        gap: ${isCompact ? '12px' : '18px'};
                     ">
                         <div id="main-view">
                             <!-- Chapter Count Display -->
                             <div style="
-                                font-weight: 600; color: #e94560; text-align: center;
-                                background: rgba(233, 69, 96, 0.1); padding: ${isCompact ? '12px' : '15px'};
-                                border-radius: 10px; border: 1px solid rgba(233, 69, 96, 0.3);
-                                margin-bottom: 20px; font-size: ${isCompact ? '16px' : '18px'};
+                                font-weight: 600; color: ${theme.textPrimary}; text-align: center;
+                                background: ${theme.accentSoft}; padding: ${isCompact ? '14px' : '18px'};
+                                border-radius: 16px; border: 1px solid ${theme.borderAccent};
+                                margin-bottom: ${isCompact ? '14px' : '18px'}; font-size: ${isCompact ? '16px' : '18px'};
+                                box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
                             ">
-                                <div style="font-size: 24px; margin-bottom: 8px;">📖</div>
+                                <div style="font-size: 26px; margin-bottom: 8px;">📖</div>
                                 <div id="chapter-count">${this.chapters.length} Chapters Detected</div>
-                                <div style="font-size: ${isCompact ? '11px' : '12px'}; color: #b0b0b0; margin-top: 8px;" id="selection-info">
+                                <div style="font-size: ${isCompact ? '11px' : '12px'}; color: ${theme.textMuted}; margin-top: 8px;" id="selection-info">
                                     All chapters will be downloaded
                                 </div>
                             </div>
 
                             <!-- Range Selection -->
                             <div style="
-                                background: rgba(102, 126, 234, 0.1); border: 1px solid rgba(102, 126, 234, 0.3);
-                                border-radius: 8px; padding: ${isCompact ? '12px' : '15px'}; margin-bottom: 20px;
+                                background: ${theme.panelElevated}; border: 1px solid ${theme.border};
+                                border-radius: 16px; padding: ${isCompact ? '14px' : '18px'}; margin-bottom: ${isCompact ? '14px' : '18px'};
+                                box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
                             ">
-                                <div style="color: #e0e0e0; font-weight: 600; margin-bottom: 10px; font-size: ${isCompact ? '13px' : '14px'};">
+                                <div style="color: ${theme.textSecondary}; font-weight: 600; margin-bottom: 12px; font-size: ${isCompact ? '13px' : '14px'};">
                                     📍 Range Selection (Optional)
                                 </div>
-                                <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
+                                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 12px;">
                                     <input type="number" id="range-from" placeholder="From" min="1" max="${this.chapters.length}" style="
-                                        flex: 1; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                        border-radius: 4px; color: #e0e0e0; font-size: ${isCompact ? '12px' : '13px'};
+                                        flex: 1; padding: 10px; background: ${theme.inputBackground}; border: 1px solid ${theme.inputBorder};
+                                        border-radius: 10px; color: ${theme.textPrimary}; font-size: ${isCompact ? '12px' : '13px'};
+                                        outline: none; transition: border-color 0.2s ease, box-shadow 0.2s ease;
                                     ">
-                                    <span style="color: #b0b0b0; font-size: ${isCompact ? '12px' : '13px'};">to</span>
+                                    <span style="color: ${theme.textMuted}; font-size: ${isCompact ? '12px' : '13px'};">to</span>
                                     <input type="number" id="range-to" placeholder="To" min="1" max="${this.chapters.length}" style="
-                                        flex: 1; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                        border-radius: 4px; color: #e0e0e0; font-size: ${isCompact ? '12px' : '13px'};
+                                        flex: 1; padding: 10px; background: ${theme.inputBackground}; border: 1px solid ${theme.inputBorder};
+                                        border-radius: 10px; color: ${theme.textPrimary}; font-size: ${isCompact ? '12px' : '13px'};
+                                        outline: none; transition: border-color 0.2s ease, box-shadow 0.2s ease;
                                     ">
                                 </div>
-                                <div style="display: flex; gap: 8px;">
+                                <div style="display: flex; gap: 10px;">
                                     <button id="select-range" style="
-                                        flex: 1; padding: 8px 12px; background: linear-gradient(45deg, #9C27B0, #7B1FA2); color: white;
-                                        border: none; border-radius: 6px; cursor: pointer; font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
+                                        flex: 1; padding: 10px 14px; background: ${THEME.infoGradient}; color: ${theme.textPrimary};
+                                        border: 1px solid rgba(41, 182, 246, 0.35); border-radius: 12px; cursor: pointer; font-size: ${isCompact ? '12px' : '13px'}; font-weight: 600;
+                                        transition: transform 0.2s ease, box-shadow 0.2s ease;
                                     ">📋 Select Range</button>
                                     <button id="select-all" style="
-                                        flex: 1; padding: 8px 12px; background: linear-gradient(45deg, #4CAF50, #45a049); color: white;
-                                        border: none; border-radius: 6px; cursor: pointer; font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
+                                        flex: 1; padding: 10px 14px; background: ${THEME.successGradient}; color: ${theme.textPrimary};
+                                        border: 1px solid rgba(76, 175, 80, 0.35); border-radius: 12px; cursor: pointer; font-size: ${isCompact ? '12px' : '13px'}; font-weight: 600;
+                                        transition: transform 0.2s ease, box-shadow 0.2s ease;
                                     ">📚 Select All</button>
                                 </div>
                             </div>
 
                             <!-- Progress -->
-                            <div style="margin-bottom: 20px;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                    <span id="progress-text" style="color: #e0e0e0; font-weight: 500; font-size: ${isCompact ? '12px' : '13px'};">Ready to download</span>
+                            <div style="
+                                background: ${theme.panelElevated}; border: 1px solid ${theme.border};
+                                border-radius: 16px; padding: ${isCompact ? '14px' : '18px'}; margin-bottom: ${isCompact ? '14px' : '18px'};
+                                box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+                            ">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                    <span id="progress-text" style="color: ${theme.textSecondary}; font-weight: 500; font-size: ${isCompact ? '12px' : '13px'};">Ready to download</span>
                                     <span id="status-badge" style="
-                                        background: linear-gradient(45deg, #667eea, #764ba2); color: white;
-                                        padding: 4px 10px; border-radius: 12px; font-size: ${isCompact ? '11px' : '12px'}; font-weight: 600;
+                                        background: ${THEME.infoGradient}; color: ${theme.textPrimary};
+                                        padding: 4px 12px; border-radius: 999px; font-size: ${isCompact ? '11px' : '12px'}; font-weight: 600; letter-spacing: 0.4px;
                                     ">Ready</span>
                                 </div>
-                                <div style="width: 100%; height: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow: hidden;">
+                                <div style="width: 100%; height: 10px; background: ${theme.highlight}; border: 1px solid ${theme.border}; border-radius: 999px; overflow: hidden;">
                                     <div id="progress-bar" style="
-                                        width: 0%; height: 100%; background: linear-gradient(90deg, #4CAF50, #45a049);
-                                        transition: width 0.3s ease; border-radius: 4px;
+                                        width: 0%; height: 100%; background: ${THEME.successGradient};
+                                        transition: width 0.35s ease; border-radius: 999px;
                                     "></div>
                                 </div>
                             </div>
 
                             <!-- Action Buttons -->
-                            <div style="display: flex; gap: 12px; margin-bottom: 15px;">
+                            <div style="display: flex; gap: 12px; margin-bottom: ${isCompact ? '12px' : '16px'};">
                                 <button id="download-chapters" style="
-                                    flex: 1; padding: ${isCompact ? '12px' : '15px'};
-                                    background: linear-gradient(45deg, #2196F3, #1976D2); color: white; border: none;
-                                    border-radius: 10px; cursor: pointer; font-weight: 600; font-size: ${isCompact ? '14px' : '16px'};
-                                    transition: all 0.2s; box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
+                                    flex: 1; padding: ${isCompact ? '12px' : '16px'};
+                                    background: ${theme.accentGradient}; color: ${theme.textPrimary}; border: 1px solid ${theme.borderAccent};
+                                    border-radius: 14px; cursor: pointer; font-weight: 600; font-size: ${isCompact ? '14px' : '16px'};
+                                    transition: transform 0.2s ease, box-shadow 0.2s ease; box-shadow: 0 24px 48px rgba(233, 69, 96, 0.25);
                                 ">${ICONS.download} Download All Chapters</button>
                                 <button id="cancel-download" style="
-                                    padding: ${isCompact ? '12px' : '15px'}; background: linear-gradient(45deg, #f44336, #d32f2f);
-                                    color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600;
-                                    font-size: ${isCompact ? '14px' : '16px'}; transition: all 0.2s; display: none;
+                                    padding: ${isCompact ? '12px' : '16px'}; background: ${THEME.dangerGradient}; color: ${theme.textPrimary};
+                                    border: 1px solid rgba(244, 67, 54, 0.45); border-radius: 14px; cursor: pointer; font-weight: 600;
+                                    font-size: ${isCompact ? '14px' : '16px'}; display: none; transition: transform 0.2s ease, box-shadow 0.2s ease;
+                                    box-shadow: 0 18px 40px rgba(244, 67, 54, 0.25);
                                 ">${ICONS.cancel} Cancel</button>
                             </div>
 
                             <!-- Utility Buttons -->
-                            <div style="display: flex; gap: 8px;">
+                            <div style="display: flex; gap: 10px;">
                                 <button id="export-logs" style="
-                                    flex: 1; padding: ${isCompact ? '8px' : '10px'}; background: linear-gradient(45deg, #FF9800, #F57400);
-                                    color: white; border: none; border-radius: 8px; cursor: pointer;
-                                    font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
+                                    flex: 1; padding: ${isCompact ? '10px' : '12px'}; background: ${THEME.warningGradient};
+                                    color: ${theme.textPrimary}; border: 1px solid rgba(255, 152, 0, 0.4); border-radius: 12px; cursor: pointer;
+                                    font-size: ${isCompact ? '12px' : '13px'}; font-weight: 600;
+                                    transition: transform 0.2s ease, box-shadow 0.2s ease;
                                 ">${ICONS.export} Export Logs</button>
                                 <button id="toggle-logs" style="
-                                    flex: 1; padding: ${isCompact ? '8px' : '10px'}; background: linear-gradient(45deg, #9C27B0, #7B1FA2);
-                                    color: white; border: none; border-radius: 8px; cursor: pointer;
-                                    font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
+                                    flex: 1; padding: ${isCompact ? '10px' : '12px'}; background: ${THEME.neutralGradient};
+                                    color: ${theme.textPrimary}; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; cursor: pointer;
+                                    font-size: ${isCompact ? '12px' : '13px'}; font-weight: 600;
+                                    transition: transform 0.2s ease, box-shadow 0.2s ease;
                                 " aria-expanded="false">${ICONS.select} Show Logs</button>
                             </div>
 
                             <!-- Log Container -->
                             <div id="log-container" style="
-                                margin-top: 15px; height: 120px; overflow-y: auto; background: rgba(0,0,0,0.4);
-                                border: 1px solid #0f3460; border-radius: 8px; padding: 10px;
-                                font-family: 'Consolas', 'Monaco', monospace; font-size: ${isCompact ? '10px' : '11px'};
-                                white-space: pre-wrap; color: #b0b0b0; display: none;
+                                margin-top: 16px; height: 130px; overflow-y: auto; background: ${theme.logBackground};
+                                border: 1px solid ${theme.border}; border-radius: 12px; padding: 12px;
+                                font-family: 'Fira Code', 'Consolas', 'Monaco', monospace; font-size: ${isCompact ? '10px' : '11px'};
+                                white-space: pre-wrap; color: ${theme.textSecondary}; display: none;
+                                box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
                             "></div>
                         </div>
 
@@ -1218,9 +1362,11 @@
 
             const header = ui.querySelector('#aggregator-header');
             this.dragHandler = new DragHandler(ui, header);
+            this.dragHandler.ensureVisible(true);
 
             this.bindUIEvents();
             this.updateUI();
+            this.updateToggleButtonState();
         }
 
         bindUIEvents() {
@@ -1402,6 +1548,7 @@
             const statusBadge = document.getElementById('status-badge');
             const chapterCount = document.getElementById('chapter-count');
             const selectionInfo = document.getElementById('selection-info');
+            const theme = THEME;
             const rangeFrom = document.getElementById('range-from');
             const rangeTo = document.getElementById('range-to');
 
@@ -1426,7 +1573,7 @@
                 logger.info(`UI updated for range selection: ${from}-${to} (${count} chapters)`);
             } else {
                 selectionInfo.textContent = 'All chapters will be downloaded';
-                downloadBtn.textContent = `📥 Download All Chapters`;
+                downloadBtn.textContent = `${ICONS.download} Download All Chapters`;
                 logger.info('UI updated for all chapters selection');
             }
 
@@ -1436,18 +1583,20 @@
                 downloadBtn.style.display = 'none';
                 cancelBtn.style.display = 'block';
                 statusBadge.textContent = 'Processing';
-                statusBadge.style.background = 'linear-gradient(45deg, #FF9800, #F57400)';
+                statusBadge.style.background = theme.warningGradient;
             } else {
                 downloadBtn.style.display = 'block';
                 cancelBtn.style.display = 'none';
                 statusBadge.textContent = 'Ready';
-                statusBadge.style.background = 'linear-gradient(45deg, #667eea, #764ba2)';
+                statusBadge.style.background = theme.infoGradient;
 
                 if (this.chapters.length > 0) {
-                    downloadBtn.style.background = 'linear-gradient(45deg, #2196F3, #1976D2)';
+                    downloadBtn.style.background = theme.accentGradient;
+                    downloadBtn.style.border = `1px solid ${theme.borderAccent}`;
                     downloadBtn.style.cursor = 'pointer';
                 } else {
-                    downloadBtn.style.background = 'linear-gradient(45deg, #666, #555)';
+                    downloadBtn.style.background = theme.neutralGradient;
+                    downloadBtn.style.border = `1px solid ${theme.border}`;
                     downloadBtn.style.cursor = 'not-allowed';
                 }
             }
@@ -1457,6 +1606,7 @@
             const progressBar = document.getElementById('progress-bar');
             const progressText = document.getElementById('progress-text');
             const statusBadge = document.getElementById('status-badge');
+            const theme = THEME;
 
             if (!progressBar || !progressText || !statusBadge) return;
 
@@ -1465,22 +1615,22 @@
             if (progress.cancelled) {
                 progressText.textContent = 'Download cancelled';
                 statusBadge.textContent = 'Cancelled';
-                progressBar.style.background = 'linear-gradient(90deg, #f44336, #d32f2f)';
-                statusBadge.style.background = 'linear-gradient(45deg, #f44336, #d32f2f)';
+                progressBar.style.background = theme.dangerGradient;
+                statusBadge.style.background = theme.dangerGradient;
             } else {
                 progressText.textContent = `Processing ${progress.current}/${progress.total} (${progress.percentage}%)`;
                 statusBadge.textContent = `${progress.current}/${progress.total}`;
 
                 if (progress.success) {
-                    progressBar.style.background = 'linear-gradient(90deg, #4CAF50, #45a049)';
+                    progressBar.style.background = theme.successGradient;
                 } else {
-                    progressBar.style.background = 'linear-gradient(90deg, #f44336, #d32f2f)';
+                    progressBar.style.background = theme.dangerGradient;
                 }
 
                 if (progress.current === progress.total) {
                     progressText.textContent = 'Processing complete!';
                     statusBadge.textContent = 'Complete';
-                    statusBadge.style.background = 'linear-gradient(45deg, #4CAF50, #45a049)';
+                    statusBadge.style.background = theme.successGradient;
                 }
             }
         }
@@ -1531,7 +1681,11 @@
 
             } catch (error) {
                 logger.error('Download failed', { error: error.message });
-                this.showNotification('Download failed. Check logs.', 'error');
+                if (error && error.code === 'CLOUDFLARE_BLOCKED') {
+                    this.showNotification('Cloudflare challenge is blocking downloads. Please open a chapter manually and retry.', 'error');
+                } else {
+                    this.showNotification('Download failed. Check logs.', 'error');
+                }
             } finally {
                 this.isProcessing = false;
                 this.updateUI();
@@ -1924,7 +2078,7 @@
 
         <div class="metadata">
             📖 Generated on ${new Date().toLocaleString()}<br>
-            📊 ${chapters.length} chapters • 🚀 NovelBin Aggregator v2.4<br>
+            📊 ${chapters.length} chapters • 🚀 NovelBin Aggregator v2.5<br>
             🎯 Optimized reading experience
         </div>
 
@@ -1938,7 +2092,7 @@
         <div class="metadata">
             ✅ End of ${novelTitle}<br>
             📖 ${chapters.length} chapters completed<br>
-            <small>Generated by NovelBin Chapter Aggregator v2.4</small>
+            <small>Generated by NovelBin Chapter Aggregator v2.5</small>
         </div>
     </main>
 
@@ -2172,7 +2326,7 @@
 
     // ================== INITIALIZATION ==================
     function init() {
-        logger.info('NovelBin Chapter Aggregator Simplified v2.4 loaded');
+        logger.info('NovelBin Chapter Aggregator Simplified v2.5 loaded');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => {

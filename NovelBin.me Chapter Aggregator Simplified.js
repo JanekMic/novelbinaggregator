@@ -752,7 +752,7 @@
                 return;
             }
 
-            logger.info('Initializing NovelBin Chapter Aggregator Simplified v2.4');
+            logger.info('Initializing NovelBin Chapter Aggregator Simplified v2.5');
             this.extractChapterList();
             this.createToggleButton();
             this.createUI();
@@ -1938,527 +1938,1231 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${novelTitle}</title>
+    <meta name="color-scheme" content="dark light">
     <style>
         :root {
-            --primary-bg: #ffffff;
-            --secondary-bg: #f8f9fa;
-            --text-primary: #2c3e50;
-            --text-secondary: #6c757d;
-            --accent: #007bff;
-            --accent-hover: #0056b3;
-            --border: #dee2e6;
-            --shadow: rgba(0,0,0,0.1);
-            --navbar-height: 60px;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --primary-bg: #1a1a1a;
-                --secondary-bg: #2d2d2d;
-                --text-primary: #e9ecef;
-                --text-secondary: #adb5bd;
-                --accent: #0d6efd;
-                --accent-hover: #0b5ed7;
-                --border: #495057;
-                --shadow: rgba(0,0,0,0.3);
-            }
+            color-scheme: dark;
         }
 
         * {
-            margin: 0;
-            padding: 0;
             box-sizing: border-box;
         }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.7;
-            color: var(--text-primary);
-            background: var(--primary-bg);
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
+        html {
+            scroll-behavior: smooth;
         }
 
-        /* Modern Navigation */
-        .navbar {
-            position: fixed;
+        body {
+            --nb-surface: #101529;
+            --nb-surface-elevated: #151c33;
+            --nb-surface-soft: rgba(255, 255, 255, 0.05);
+            --nb-border: rgba(255, 255, 255, 0.08);
+            --nb-text: #f5f7ff;
+            --nb-muted: #9aa3c1;
+            --nb-accent: #e94560;
+            --nb-accent-strong: #ff5c7a;
+            --nb-blue: #2196f3;
+            --nb-green: #2ecc71;
+            --nb-yellow: #f6ad55;
+            --nb-radius: 16px;
+            --reader-font-scale: 1;
+            --reader-line-height: 1.7;
+            --reader-width: 760px;
+            --nb-header-height: 86px;
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at top, rgba(35, 46, 75, 0.88) 0%, #0b1120 60%, #060a16 100%);
+            color: var(--nb-text);
+            line-height: var(--reader-line-height);
+            font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            transition: background 0.35s ease, color 0.35s ease;
+        }
+
+        body[data-theme='light'] {
+            color-scheme: light;
+            --nb-surface: #ffffff;
+            --nb-surface-elevated: #f5f6ff;
+            --nb-surface-soft: rgba(16, 21, 41, 0.05);
+            --nb-border: rgba(16, 21, 41, 0.08);
+            --nb-text: #1d263b;
+            --nb-muted: #5b6784;
+            --nb-accent: #c4284a;
+            --nb-accent-strong: #f25576;
+            --nb-blue: #2563eb;
+            --nb-green: #16a34a;
+            --nb-yellow: #f59e0b;
+            background: linear-gradient(180deg, #f8f9ff 0%, #eef1ff 100%);
+        }
+
+        body[data-width='narrow'] {
+            --reader-width: 640px;
+        }
+
+        body[data-width='medium'] {
+            --reader-width: 760px;
+        }
+
+        body[data-width='wide'] {
+            --reader-width: 920px;
+        }
+
+        body, button, input, textarea {
+            font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        button, input {
+            color: inherit;
+        }
+
+        ::selection {
+            background: rgba(233, 69, 96, 0.4);
+            color: #ffffff;
+        }
+
+        a {
+            color: var(--nb-accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--nb-accent-strong);
+        }
+
+        .nb-reader {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding-bottom: 80px;
+        }
+
+        .nb-header {
+            position: sticky;
             top: 0;
-            left: 0;
-            right: 0;
-            height: var(--navbar-height);
-            background: var(--secondary-bg);
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid var(--border);
-            z-index: 1000;
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding: 18px clamp(16px, 4vw, 32px) 12px;
+            background: rgba(10, 13, 25, 0.85);
+            border-bottom: 1px solid var(--nb-border);
+            box-shadow: 0 24px 40px rgba(6, 10, 22, 0.35);
+            backdrop-filter: blur(18px);
+        }
+
+        body[data-theme='light'] .nb-header {
+            background: rgba(247, 249, 255, 0.92);
+            box-shadow: 0 18px 32px rgba(14, 23, 55, 0.12);
+        }
+
+        .nb-header__top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .nb-header__brand {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .nb-header__title {
+            font-size: clamp(1.6rem, 1.2rem + 1vw, 2.2rem);
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+
+        .nb-header__meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 0.95rem;
+            color: var(--nb-muted);
+        }
+
+        .nb-header__meta span {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .nb-header__actions {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+        }
+
+        .nb-quick-stats {
+            font-size: 0.95rem;
+            color: var(--nb-muted);
+        }
+
+        .nb-action-group {
             display: flex;
             align-items: center;
-            padding: 0 20px;
-            box-shadow: 0 2px 10px var(--shadow);
-        }
-
-        .nav-brand {
-            font-weight: 700;
-            font-size: 18px;
-            color: var(--accent);
-            margin-right: auto;
-        }
-
-        .nav-stats {
-            font-size: 14px;
-            color: var(--text-secondary);
-            margin-right: 20px;
-        }
-
-        .menu-toggle {
-            background: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 8px 12px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: all 0.2s ease;
-        }
-
-        .menu-toggle:hover {
-            background: var(--accent-hover);
-            transform: translateY(-1px);
-        }
-
-        /* Sidebar */
-        .sidebar {
-            position: fixed;
-            top: var(--navbar-height);
-            right: -300px; left: auto;
-            width: 300px;
-            height: calc(100vh - var(--navbar-height));
-            background: var(--secondary-bg);
-            border-right: 1px solid var(--border);
-            overflow-y: auto;
-            /* transition: left 0.3s ease; */
-            z-index: 999;
-            box-shadow: 2px 0 10px var(--shadow);
-        }
-
-        .sidebar.open {
-            right: 0; left: auto;
-        }
-
-        .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid var(--border);
-            background: linear-gradient(135deg, var(--accent), var(--accent-hover));
-            color: white;
-        }
-
-        .sidebar-title {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 5px;
-        }
-
-        .sidebar-meta {
-            font-size: 12px;
-            opacity: 0.9;
-        }
-
-        .chapter-list {
-            padding: 10px 0;
-        }
-
-        .chapter-item {
-            display: block;
-            padding: 12px 20px;
-            color: var(--text-secondary);
-            text-decoration: none;
-            border-left: 3px solid transparent;
-            transition: all 0.2s ease;
-            font-size: 14px;
-        }
-
-        .chapter-item:hover,
-        .chapter-item.active {
-            background: rgba(0, 123, 255, 0.1);
-            border-left-color: var(--accent);
-            color: var(--accent);
-            transform: translateX(5px);
-        }
-
-        .chapter-item.active {
-            font-weight: 600;
-        }
-
-        /* Main Content */
-        .main-content {
-            margin-top: var(--navbar-height);
-            max-width: 800px;
-            margin-left: auto;
-            margin-right: auto;
-            padding: 40px 30px;
-            /* transition: margin-left 0.3s ease; */
-        }
-
-        .main-content.sidebar-open {
-            /* margin-left: 300px; */
-        }
-
-        /* Typography */
-        .book-title {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: var(--accent);
-            text-align: center;
-            margin-bottom: 30px;
-            letter-spacing: -0.02em;
-        }
-
-        .chapter-title {
-            font-size: 1.8rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin: 60px 0 30px 0;
-            padding-bottom: 15px;
-            border-bottom: 2px solid var(--border);
-            scroll-margin-top: calc(var(--navbar-height) + 20px);
-        }
-
-        .chapter-content {
-            margin-bottom: 60px;
-            font-size: 16px;
-            line-height: 1.8;
-        }
-
-        .chapter-content p {
-            margin-bottom: 20px;
-            text-align: justify;
-        }
-
-        .chapter-content p:first-child::first-letter {
-            font-size: 3em;
-            line-height: 1;
-            float: left;
-            margin: 5px 10px 0 0;
-            color: var(--accent);
-            font-weight: 700;
-        }
-
-        /* Metadata */
-        .metadata {
-            background: var(--secondary-bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 30px;
-            text-align: center;
-            color: var(--text-secondary);
-            margin: 40px 0;
-            box-shadow: 0 4px 20px var(--shadow);
-        }
-
-        /* Progress Indicator */
-        .progress-bar {
-            position: fixed;
-            top: var(--navbar-height);
-            left: 0;
-            height: 3px;
-            background: var(--accent);
-            z-index: 998;
-            transition: width 0.1s ease;
-        }
-
-        /* Navigation Controls */
-        .nav-controls {
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
-            display: flex;
             gap: 10px;
-            z-index: 997;
         }
 
-        .nav-btn {
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: var(--accent);
-            color: white;
+        .nb-progress {
+            height: 5px;
+            width: 100%;
+            background: var(--nb-surface-soft);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .nb-progress__bar {
+            height: 100%;
+            width: 0;
+            background: linear-gradient(135deg, var(--nb-blue), var(--nb-accent));
+            border-radius: inherit;
+            transition: width 0.2s ease;
+        }
+
+        .nb-toolbar {
+            position: sticky;
+            top: calc(var(--nb-header-height));
+            z-index: 40;
+            display: flex;
+            gap: 18px;
+            padding: 12px clamp(16px, 4vw, 32px);
+            background: rgba(12, 16, 32, 0.8);
+            border-bottom: 1px solid var(--nb-border);
+            backdrop-filter: blur(16px);
+            overflow-x: auto;
+        }
+
+        body[data-theme='light'] .nb-toolbar {
+            background: rgba(248, 250, 255, 0.94);
+            box-shadow: inset 0 -1px 0 rgba(14, 23, 55, 0.06);
+        }
+
+        .nb-toolbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .nb-toolbar__group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            background: var(--nb-surface-elevated);
+            border: 1px solid var(--nb-border);
+            border-radius: var(--nb-radius);
+            box-shadow: 0 12px 24px rgba(6, 10, 22, 0.25);
+        }
+
+        body[data-theme='light'] .nb-toolbar__group {
+            box-shadow: 0 12px 24px rgba(14, 23, 55, 0.08);
+        }
+
+        .nb-toolbar__label {
+            font-size: 0.9rem;
+            color: var(--nb-muted);
+            white-space: nowrap;
+        }
+
+        .nb-toolbar__value {
+            min-width: 48px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .nb-btn, .nb-icon-btn {
             border: none;
+            border-radius: 999px;
+            padding: 10px 18px;
+            font-weight: 600;
+            font-size: 0.95rem;
             cursor: pointer;
-            font-size: 18px;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 15px var(--shadow);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
         }
 
-        .nav-btn:hover {
-            background: var(--accent-hover);
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px var(--shadow);
-        }
-
-        .nav-btn:disabled {
+        .nb-btn:disabled, .nb-icon-btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
+            box-shadow: none;
             transform: none;
         }
 
-        /* Responsive Design */
+        .nb-btn--primary {
+            background: linear-gradient(135deg, var(--nb-accent), var(--nb-accent-strong));
+            color: #ffffff;
+            box-shadow: 0 18px 32px rgba(233, 69, 96, 0.35);
+        }
+
+        .nb-btn--primary:hover, .nb-btn--primary:focus-visible {
+            transform: translateY(-2px);
+            box-shadow: 0 20px 36px rgba(233, 69, 96, 0.45);
+        }
+
+        .nb-btn--ghost {
+            background: transparent;
+            color: var(--nb-muted);
+            border: 1px solid var(--nb-border);
+            padding-inline: 16px;
+        }
+
+        .nb-btn--ghost:hover, .nb-btn--ghost:focus-visible {
+            color: var(--nb-text);
+            border-color: var(--nb-accent);
+        }
+
+        .nb-btn--small {
+            padding: 8px 14px;
+            font-size: 0.85rem;
+        }
+
+        .nb-icon-btn {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--nb-surface-elevated);
+            border: 1px solid var(--nb-border);
+            color: inherit;
+            box-shadow: 0 12px 24px rgba(6, 10, 22, 0.22);
+        }
+
+        .nb-icon-btn:hover, .nb-icon-btn:focus-visible {
+            border-color: var(--nb-accent);
+            transform: translateY(-2px);
+        }
+
+        .nb-icon-btn.is-active {
+            background: linear-gradient(135deg, var(--nb-accent), var(--nb-blue));
+            color: #ffffff;
+        }
+
+        .nb-layout {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 1fr);
+            gap: 28px;
+            padding: 32px clamp(16px, 5vw, 48px) 48px;
+        }
+
+        .nb-sidebar {
+            position: sticky;
+            top: calc(var(--nb-header-height) + 76px);
+            align-self: start;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            padding: 24px;
+            background: var(--nb-surface-elevated);
+            border: 1px solid var(--nb-border);
+            border-radius: var(--nb-radius);
+            box-shadow: 0 32px 48px rgba(6, 10, 22, 0.38);
+            max-height: calc(100vh - 140px);
+            overflow: hidden;
+        }
+
+        .nb-sidebar__header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .nb-sidebar__title {
+            font-weight: 600;
+            font-size: 1.05rem;
+        }
+
+        .nb-sidebar__meta {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 0.9rem;
+            color: var(--nb-muted);
+        }
+
+        .nb-sidebar__search input {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--nb-border);
+            background: var(--nb-surface);
+            color: inherit;
+        }
+
+        .nb-sidebar__list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-right: 6px;
+        }
+
+        .nb-sidebar__item {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 14px;
+            background: transparent;
+            color: inherit;
+            border-radius: 12px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            text-align: left;
+            transition: transform 0.18s ease, border 0.18s ease, background 0.18s ease;
+        }
+
+        .nb-sidebar__item:hover, .nb-sidebar__item:focus-visible {
+            border-color: var(--nb-border);
+            background: var(--nb-surface);
+            transform: translateX(4px);
+        }
+
+        .nb-sidebar__item.is-active {
+            background: linear-gradient(135deg, rgba(233, 69, 96, 0.22), rgba(33, 150, 243, 0.22));
+            border-color: rgba(233, 69, 96, 0.45);
+        }
+
+        .nb-sidebar__index {
+            font-weight: 600;
+            color: var(--nb-muted);
+        }
+
+        .nb-sidebar__title-text {
+            font-weight: 600;
+            line-height: 1.3;
+        }
+
+        .nb-sidebar__meta span {
+            font-size: 0.8rem;
+            color: var(--nb-muted);
+        }
+
+        .nb-sidebar__empty {
+            text-align: center;
+            color: var(--nb-muted);
+            padding: 16px 0;
+            font-size: 0.9rem;
+        }
+
+        .nb-content {
+            max-width: var(--reader-width);
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+        }
+
+        .nb-card, .nb-chapter, .nb-intro-card, .nb-outro-card {
+            background: var(--nb-surface-elevated);
+            border: 1px solid var(--nb-border);
+            border-radius: calc(var(--nb-radius) + 4px);
+            padding: clamp(24px, 4vw, 40px);
+            box-shadow: 0 32px 48px rgba(6, 10, 22, 0.32);
+        }
+
+        body[data-theme='light'] .nb-card,
+        body[data-theme='light'] .nb-chapter,
+        body[data-theme='light'] .nb-intro-card,
+        body[data-theme='light'] .nb-outro-card {
+            box-shadow: 0 24px 36px rgba(14, 23, 55, 0.12);
+        }
+
+        .nb-intro-card h1 {
+            margin-bottom: 12px;
+            font-size: clamp(2.1rem, 1.6rem + 1vw, 2.8rem);
+        }
+
+        .nb-intro-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 18px;
+            color: var(--nb-muted);
+            font-size: 0.95rem;
+            margin-bottom: 18px;
+        }
+
+        .nb-intro-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .nb-chapter {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .nb-chapter__header {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .nb-chapter__eyebrow {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.18em;
+            color: var(--nb-muted);
+        }
+
+        .nb-chapter__title {
+            font-size: clamp(1.6rem, 1.3rem + 0.8vw, 2.2rem);
+            font-weight: 700;
+            line-height: 1.3;
+            scroll-margin-top: calc(var(--nb-header-height) + 120px);
+        }
+
+        .nb-chapter__meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 0.9rem;
+            color: var(--nb-muted);
+        }
+
+        .nb-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: var(--nb-surface);
+            border: 1px solid var(--nb-border);
+        }
+
+        .nb-chip--accent {
+            background: rgba(233, 69, 96, 0.16);
+            border-color: rgba(233, 69, 96, 0.38);
+            color: var(--nb-text);
+        }
+
+        .nb-chapter__content {
+            font-size: calc(1rem * var(--reader-font-scale));
+            line-height: var(--reader-line-height);
+            display: grid;
+            gap: 1em;
+        }
+
+        .nb-chapter__content p {
+            margin: 0;
+        }
+
+        .nb-chapter__content p + p {
+            margin-top: 0.5em;
+        }
+
+        .nb-chapter__content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            box-shadow: 0 18px 32px rgba(6, 10, 22, 0.4);
+        }
+
+        .nb-chapter__content hr {
+            border: none;
+            height: 1px;
+            background: var(--nb-border);
+            margin: 1.5em 0;
+        }
+
+        .nb-chapter__content blockquote {
+            border-left: 4px solid var(--nb-accent);
+            margin: 0;
+            padding-left: 16px;
+            color: var(--nb-muted);
+            font-style: italic;
+        }
+
+        .nb-chapter__content ul, .nb-chapter__content ol {
+            padding-left: 1.4em;
+        }
+
+        .nb-chapter__content table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95rem;
+        }
+
+        .nb-chapter__content table th,
+        .nb-chapter__content table td {
+            border: 1px solid var(--nb-border);
+            padding: 8px 10px;
+        }
+
+        .nb-chapter__footer {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: space-between;
+            margin-top: 8px;
+        }
+
+        .nb-outro-card {
+            text-align: center;
+            color: var(--nb-muted);
+        }
+
+        .nb-floating {
+            position: fixed;
+            bottom: 28px;
+            right: 28px;
+            display: flex;
+            gap: 12px;
+            z-index: 60;
+        }
+
+        .nb-floating .nb-icon-btn {
+            width: 48px;
+            height: 48px;
+            box-shadow: 0 24px 40px rgba(6, 10, 22, 0.35);
+        }
+
+        .nb-floating .nb-icon-btn:hover {
+            transform: translateY(-3px);
+        }
+
+        .nb-sidebar__overlay {
+            display: none;
+        }
+
+        body.is-sidebar-open .nb-sidebar__overlay {
+            display: block;
+            position: fixed;
+            inset: 0;
+            background: rgba(4, 8, 16, 0.6);
+            backdrop-filter: blur(3px);
+            z-index: 45;
+        }
+
+        @media (max-width: 1200px) {
+            .nb-layout {
+                grid-template-columns: 280px minmax(0, 1fr);
+            }
+        }
+
+        @media (max-width: 1024px) {
+            body {
+                --nb-header-height: 108px;
+            }
+
+            .nb-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .nb-sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                width: min(360px, 86vw);
+                border-radius: 0;
+                max-height: none;
+                transform: translateX(-110%);
+                transition: transform 0.28s ease;
+                z-index: 55;
+                box-shadow: 0 32px 60px rgba(6, 10, 22, 0.55);
+            }
+
+            body.is-sidebar-open .nb-sidebar {
+                transform: translateX(0);
+            }
+
+            .nb-sidebar__close {
+                display: inline-flex;
+            }
+
+            .nb-toolbar {
+                top: calc(var(--nb-header-height) + 8px);
+            }
+        }
+
         @media (max-width: 768px) {
-            .navbar {
-                padding: 0 15px;
+            .nb-header__top {
+                flex-direction: column;
+                align-items: flex-start;
             }
 
-            .nav-stats {
-                display: none;
+            .nb-header__actions {
+                align-items: flex-start;
             }
 
-            .main-content {
-                padding: 30px 20px;
+            .nb-floating {
+                right: 16px;
+                bottom: 16px;
             }
 
-            .book-title {
-                font-size: 2rem;
-            }
-
-            .chapter-title {
-                font-size: 1.5rem;
-            }
-
-            .nav-controls {
-                bottom: 20px;
-                right: 20px;
-            }
-
-            .nav-btn {
-                width: 45px;
-                height: 45px;
-                font-size: 16px;
+            .nb-toolbar__group {
+                padding: 10px 12px;
             }
         }
 
-        @media (max-width: 480px) {
-            .sidebar {
-                width: 280px;
-                left: -280px;
-            }
-
-            .main-content {
-                padding: 20px 15px;
-            }
-
-            .book-title {
-                font-size: 1.6rem;
-            }
-
-            .chapter-title {
-                font-size: 1.3rem;
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+                scroll-behavior: auto !important;
             }
         }
 
-        /* Print Styles */
         @media print {
-            .navbar, .sidebar, .nav-controls, .progress-bar {
+            body {
+                background: #ffffff !important;
+                color: #000000 !important;
+            }
+
+            .nb-header,
+            .nb-toolbar,
+            .nb-sidebar,
+            .nb-floating,
+            .nb-sidebar__overlay {
                 display: none !important;
             }
 
-            .main-content {
-                margin: 0;
-                max-width: none;
+            .nb-layout {
                 padding: 0;
             }
 
-            .chapter-title {
+            .nb-card,
+            .nb-chapter,
+            .nb-intro-card,
+            .nb-outro-card {
+                box-shadow: none;
+                border: none;
+                padding: 0;
+            }
+
+            .nb-chapter__title {
                 page-break-before: always;
-                margin-top: 0;
             }
         }
     </style>
 </head>
-<body>
-    <!-- Navigation Bar -->
-    <nav class="navbar">
-        <div class="nav-brand">${novelTitle}</div>
-        <div class="nav-stats" id="chapter-stats">${chapters[0] ? chapters[0].chapterTitle : ''}</div>
-        <button class="menu-toggle" onclick="toggleSidebar()">📚 Chapters</button>
-    </nav>
-
-    <!-- Progress Bar -->
-    <div class="progress-bar" id="progress-bar"></div>
-
-    <!-- Sidebar -->
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-            <div class="sidebar-title">${novelTitle}</div>
-            <div class="sidebar-meta">${chapters.length} chapters • Generated ${new Date().toLocaleDateString()}</div>
-        </div>
-        <nav class="chapter-list">
-            ${chapters.map((chapter, index) => `
-                <a href="#chapter-${index + 1}" class="chapter-item" onclick="navigateToChapter(${index + 1})">
-                    ${index + 1}. ${chapter.chapterTitle}
-                </a>
-            `).join('')}
-        </nav>
-    </aside>
-
-    <!-- Main Content -->
-    <main class="main-content" id="main-content">
-        <h1 class="book-title">${novelTitle}</h1>
-
-        <div class="metadata">
-            📖 Generated on ${new Date().toLocaleString()}<br>
-            📊 ${chapters.length} chapters • 🚀 NovelBin Aggregator v2.4<br>
-            🎯 Optimized reading experience
-        </div>
-
-        ${chapters.map((chapter, index) => `
-            <h2 class="chapter-title" id="chapter-${index + 1}">${chapter.chapterTitle}</h2>
-            <div class="chapter-content">
-                ${chapter.content}
+<body data-theme="dark" data-width="medium">
+    <div class="nb-reader">
+        <header class="nb-header">
+            <div class="nb-header__top">
+                <div class="nb-header__brand">
+                    <div class="nb-header__title">${novelTitle}</div>
+                    <div class="nb-header__meta">
+                        <span id="chapter-counter">${chapters.length > 0 ? `Chapter 1 of ${chapters.length}` : 'No chapters detected'}</span>
+                        <span>•</span>
+                        <span id="current-chapter-title">${chapters[0] ? chapters[0].chapterTitle : ''}</span>
+                        <span>•</span>
+                        <span>Generated ${new Date().toLocaleString()}</span>
+                    </div>
+                </div>
+                <div class="nb-header__actions">
+                    <div class="nb-quick-stats">
+                        <span id="total-words">–</span> words • <span id="reading-time">–</span> min read
+                    </div>
+                    <div class="nb-action-group">
+                        <button class="nb-icon-btn" id="toc-toggle" title="Toggle chapter list" aria-label="Toggle chapter list">📚</button>
+                        <button class="nb-icon-btn" id="search-toggle" title="Search chapters" aria-label="Search chapters">🔍</button>
+                        <button class="nb-icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">🌙</button>
+                    </div>
+                </div>
             </div>
-        `).join('')}
+            <div class="nb-progress" aria-hidden="true">
+                <div class="nb-progress__bar" id="progress-bar"></div>
+            </div>
+        </header>
 
-        <div class="metadata">
-            ✅ End of ${novelTitle}<br>
-            📖 ${chapters.length} chapters completed<br>
-            <small>Generated by NovelBin Chapter Aggregator v2.4</small>
+        <section class="nb-toolbar" aria-label="Reading preferences">
+            <div class="nb-toolbar__group">
+                <span class="nb-toolbar__label">Font size</span>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" id="font-decrease" aria-label="Decrease font size">A−</button>
+                <span class="nb-toolbar__value" id="font-label">100%</span>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" id="font-increase" aria-label="Increase font size">A+</button>
+            </div>
+            <div class="nb-toolbar__group">
+                <span class="nb-toolbar__label">Line height</span>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" id="line-decrease" aria-label="Decrease line height">−</button>
+                <span class="nb-toolbar__value" id="line-label">1.70×</span>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" id="line-increase" aria-label="Increase line height">＋</button>
+            </div>
+            <div class="nb-toolbar__group">
+                <span class="nb-toolbar__label">Page width</span>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" data-width-option="narrow">Narrow</button>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" data-width-option="medium">Comfort</button>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" data-width-option="wide">Wide</button>
+            </div>
+            <div class="nb-toolbar__group">
+                <span class="nb-toolbar__label">Preferences</span>
+                <button class="nb-btn nb-btn--ghost nb-btn--small" id="reset-preferences">Reset</button>
+            </div>
+        </section>
+
+        <div class="nb-layout">
+            <aside class="nb-sidebar" id="sidebar" data-state="closed" aria-label="Chapter list">
+                <div class="nb-sidebar__header">
+                    <div>
+                        <div class="nb-sidebar__title">Table of contents</div>
+                        <div class="nb-sidebar__meta">
+                            <span>${chapters.length} chapters total</span>
+                            <span id="sidebar-words">– words</span>
+                        </div>
+                    </div>
+                    <button class="nb-icon-btn nb-sidebar__close" id="sidebar-close" aria-label="Close chapter list" title="Close">✕</button>
+                </div>
+                <div class="nb-sidebar__search">
+                    <input type="search" id="sidebar-search" placeholder="Filter chapters..." autocomplete="off">
+                </div>
+                <nav class="nb-sidebar__list" id="toc" aria-label="Chapters">
+                    ${chapters.map((chapter, index) => `
+                        <button class="nb-sidebar__item${index === 0 ? ' is-active' : ''}" data-target="chapter-${index + 1}" data-index="${index + 1}">
+                            <span class="nb-sidebar__index">${index + 1}</span>
+                            <span class="nb-sidebar__title-text">${chapter.chapterTitle}</span>
+                            <span class="nb-sidebar__meta" data-chapter-meta="${index + 1}">—</span>
+                        </button>
+                    `).join('')}
+                    ${chapters.length === 0 ? '<div class="nb-sidebar__empty">No chapters available.</div>' : ''}
+                </nav>
+            </aside>
+            <div class="nb-sidebar__overlay" id="sidebar-overlay"></div>
+
+            <main class="nb-content" id="main-content">
+                <article class="nb-intro-card">
+                    <h1>${novelTitle}</h1>
+                    <div class="nb-intro-meta">
+                        <span>${chapters.length} chapters</span>
+                        <span id="intro-words">– words</span>
+                        <span id="intro-reading-time">– min read</span>
+                    </div>
+                    <p class="nb-intro-description">Enjoy a focused, distraction-free reading experience that mirrors the in-page NovelBin Aggregator design. Customize the typography, toggle between light and dark themes, and keep track of your progress as you move between chapters.</p>
+                    <div class="nb-intro-actions">
+                        <button class="nb-btn nb-btn--primary" id="start-reading">Start reading</button>
+                        <button class="nb-btn nb-btn--ghost" id="jump-latest">Jump to latest</button>
+                    </div>
+                </article>
+
+                ${chapters.map((chapter, index) => `
+                    <article class="nb-chapter" id="chapter-${index + 1}" data-index="${index + 1}">
+                        <header class="nb-chapter__header">
+                            <div class="nb-chapter__eyebrow">Chapter ${index + 1}</div>
+                            <h2 class="nb-chapter__title">${chapter.chapterTitle}</h2>
+                            <div class="nb-chapter__meta">
+                                <span class="nb-chip nb-chip--accent" data-meta-words="${index + 1}">— words</span>
+                                <span class="nb-chip" data-meta-reading="${index + 1}">— min read</span>
+                            </div>
+                        </header>
+                        <section class="nb-chapter__content">
+                            ${chapter.content}
+                        </section>
+                        <footer class="nb-chapter__footer">
+                            <button class="nb-btn nb-btn--ghost nb-btn--small" data-action="prev" ${index === 0 ? 'disabled' : ''}>‹ Previous</button>
+                            <button class="nb-btn nb-btn--ghost nb-btn--small" data-action="top">Back to top</button>
+                            <button class="nb-btn nb-btn--ghost nb-btn--small" data-action="next" ${index === chapters.length - 1 ? 'disabled' : ''}>Next ›</button>
+                        </footer>
+                    </article>
+                `).join('')}
+
+                <article class="nb-outro-card">
+                    <h2>All chapters complete ✅</h2>
+                    <p>Thanks for reading <strong>${novelTitle}</strong> with the NovelBin Aggregator Simplified reader.</p>
+                    <p>Generated by NovelBin Aggregator Simplified v2.5.0 · ${new Date().toLocaleString()}</p>
+                </article>
+            </main>
         </div>
-    </main>
 
-    <!-- Navigation Controls -->
-    <div class="nav-controls">
-        <button class="nav-btn" id="prev-btn" onclick="navigatePrev()" title="Previous chapter">‹</button>
-        <button class="nav-btn" id="next-btn" onclick="navigateNext()" title="Next chapter">›</button>
+        <div class="nb-floating" aria-label="Quick navigation">
+            <button class="nb-icon-btn" id="float-prev" title="Previous chapter (Ctrl + ←)">‹</button>
+            <button class="nb-icon-btn" id="float-toc" title="Toggle chapter list">☰</button>
+            <button class="nb-icon-btn" id="float-next" title="Next chapter (Ctrl + →)">›</button>
+        </div>
     </div>
 
     <script>
-        let currentChapter = 1;
-        const totalChapters = ${chapters.length};
-        const chapterTitles = ${JSON.stringify(chapters.map(c => c.chapterTitle))};
-        let sidebarOpen = false;
+        (function() {
+            const novelTitle = ${JSON.stringify(novelTitle)};
+            const totalChapters = ${chapters.length};
+            const storageKeys = {
+                theme: 'nbReaderTheme',
+                font: 'nbReaderFontScale',
+                line: 'nbReaderLineHeight',
+                width: 'nbReaderWidth'
+            };
 
-        // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            updateProgress();
-            updateNavButtons();
-            updateActiveChapter();
-
-            // Scroll handler
-            let scrollTimeout;
-            window.addEventListener('scroll', function() {
-                if (scrollTimeout) clearTimeout(scrollTimeout);
-                scrollTimeout = setTimeout(() => {
-                    updateProgress();
-                    updateCurrentChapter();
-                }, 16);
-            });
-
-            // Keyboard shortcuts
-            document.addEventListener('keydown', function(e) {
-                if (e.key === 'ArrowLeft' && e.ctrlKey) {
-                    e.preventDefault();
-                    navigatePrev();
-                } else if (e.key === 'ArrowRight' && e.ctrlKey) {
-                    e.preventDefault();
-                    navigateNext();
-                } else if (e.key === 'Escape' && sidebarOpen) {
-                    toggleSidebar();
-                }
-            });
-
-            // Close sidebar on outside click (mobile)
-            document.addEventListener('click', function(e) {
-                if (sidebarOpen && !e.target.closest('.sidebar') && !e.target.closest('.menu-toggle')) {
-                    if (window.innerWidth <= 1100) {
-                        toggleSidebar();
-                    }
-                }
-            });
-        });
-
-        function toggleSidebar() {
-            sidebarOpen = !sidebarOpen;
+            const body = document.body;
+            const chapters = Array.from(document.querySelectorAll('.nb-chapter'));
+            const tocItems = Array.from(document.querySelectorAll('.nb-sidebar__item'));
+            const progressBar = document.getElementById('progress-bar');
+            const chapterCounter = document.getElementById('chapter-counter');
+            const currentChapterTitle = document.getElementById('current-chapter-title');
+            const floatPrev = document.getElementById('float-prev');
+            const floatNext = document.getElementById('float-next');
+            const floatToc = document.getElementById('float-toc');
             const sidebar = document.getElementById('sidebar');
-            const mainContent = document.getElementById('main-content');
+            const sidebarOverlay = document.getElementById('sidebar-overlay');
+            const sidebarSearch = document.getElementById('sidebar-search');
+            const themeToggle = document.getElementById('theme-toggle');
+            const fontIncrease = document.getElementById('font-increase');
+            const fontDecrease = document.getElementById('font-decrease');
+            const lineIncrease = document.getElementById('line-increase');
+            const lineDecrease = document.getElementById('line-decrease');
+            const resetPreferences = document.getElementById('reset-preferences');
+            const widthButtons = Array.from(document.querySelectorAll('[data-width-option]'));
+            const fontLabel = document.getElementById('font-label');
+            const lineLabel = document.getElementById('line-label');
+            const startReading = document.getElementById('start-reading');
+            const jumpLatest = document.getElementById('jump-latest');
+            const searchToggle = document.getElementById('search-toggle');
+            const tocToggle = document.getElementById('toc-toggle');
+            const sidebarClose = document.getElementById('sidebar-close');
 
-            sidebar.classList.toggle('open');
-            // if (window.innerWidth > 1100) { // This condition might need adjustment based on new sidebar logic
-            //     mainContent.classList.toggle('sidebar-open');
-            // }
-            // For a right-side sidebar, you might not need to adjust main content margin,
-            // or you might adjust margin-right if the sidebar pushes content.
-            // The original instruction was to remove margin adjustments, so we'll stick to that.
-            // If the sidebar is an overlay, main content doesn't need to move.
-            // If it's meant to push content, then margin-right would be adjusted.
-            // Based on the CSS changes, the sidebar is likely an overlay now.
-        }
+            let currentIndex = 0;
+            let fontScale = parseFloat(localStorage.getItem(storageKeys.font) || '1');
+            let lineHeight = parseFloat(localStorage.getItem(storageKeys.line) || '1.7');
+            let contentWidth = localStorage.getItem(storageKeys.width) || 'medium';
 
-        function navigateToChapter(chapterNum) {
-            currentChapter = chapterNum;
-            const element = document.getElementById('chapter-' + chapterNum);
-            if (element) {
-                element.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                updateNavButtons();
-                updateActiveChapter();
+            const numberFormatter = new Intl.NumberFormat();
 
-                if (window.innerWidth <= 1100 && sidebarOpen) {
-                    setTimeout(() => toggleSidebar(), 300);
+            function clamp(value, min, max) {
+                return Math.min(Math.max(value, min), max);
+            }
+
+            function applyFontScale(value) {
+                fontScale = clamp(value, 0.85, 1.4);
+                body.style.setProperty('--reader-font-scale', fontScale);
+                fontLabel.textContent = Math.round(fontScale * 100) + '%';
+                localStorage.setItem(storageKeys.font, fontScale.toFixed(2));
+            }
+
+            function applyLineHeight(value) {
+                lineHeight = clamp(value, 1.45, 2.05);
+                body.style.setProperty('--reader-line-height', lineHeight);
+                lineLabel.textContent = lineHeight.toFixed(2) + '×';
+                localStorage.setItem(storageKeys.line, lineHeight.toFixed(2));
+            }
+
+            function applyWidth(value) {
+                const allowed = ['narrow', 'medium', 'wide'];
+                if (!allowed.includes(value)) {
+                    value = 'medium';
+                }
+                contentWidth = value;
+                body.dataset.width = contentWidth;
+                widthButtons.forEach(btn => {
+                    const isActive = btn.dataset.widthOption === contentWidth;
+                    btn.classList.toggle('nb-btn--primary', isActive);
+                    btn.classList.toggle('nb-btn--ghost', !isActive);
+                    btn.setAttribute('aria-pressed', String(isActive));
+                });
+                localStorage.setItem(storageKeys.width, contentWidth);
+            }
+
+            function applyTheme(theme) {
+                const resolvedTheme = theme === 'light' ? 'light' : 'dark';
+                body.dataset.theme = resolvedTheme;
+                themeToggle.textContent = resolvedTheme === 'dark' ? '☀️' : '🌙';
+                themeToggle.setAttribute('title', resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+                localStorage.setItem(storageKeys.theme, resolvedTheme);
+            }
+
+            function updateDocumentTitle() {
+                if (!chapters.length) {
+                    document.title = novelTitle;
+                    return;
+                }
+                const activeChapter = chapters[currentIndex];
+                const title = activeChapter ? activeChapter.querySelector('.nb-chapter__title') : null;
+                if (title) {
+                    document.title = title.textContent + ' • ' + novelTitle;
+                } else {
+                    document.title = novelTitle;
                 }
             }
-        }
 
-        function navigatePrev() {
-            if (currentChapter > 1) {
-                navigateToChapter(currentChapter - 1);
-            }
-        }
-
-        function navigateNext() {
-            if (currentChapter < totalChapters) {
-                navigateToChapter(currentChapter + 1);
-            }
-        }
-
-        function updateProgress() {
-            const totalHeight = document.documentElement.scrollHeight - window.innerHeight;
-            const progress = totalHeight > 0 ? (window.pageYOffset / totalHeight) * 100 : 0;
-            document.getElementById('progress-bar').style.width = Math.min(100, Math.max(0, progress)) + '%';
-        }
-
-        function updateCurrentChapter() {
-            const chapters = document.querySelectorAll('.chapter-title');
-            const scrollPos = window.pageYOffset + 100;
-
-            for (let i = chapters.length - 1; i >= 0; i--) {
-                if (chapters[i].offsetTop <= scrollPos) {
-                    const newChapter = i + 1;
-                    if (newChapter !== currentChapter) {
-                        currentChapter = newChapter;
-                        updateNavButtons();
-                        updateActiveChapter();
+            function updateCurrentChapterDisplay() {
+                if (!chapters.length) return;
+                const total = chapters.length;
+                chapterCounter.textContent = 'Chapter ' + (currentIndex + 1) + ' of ' + total;
+                const activeChapter = chapters[currentIndex];
+                if (activeChapter) {
+                    const title = activeChapter.querySelector('.nb-chapter__title');
+                    if (title) {
+                        currentChapterTitle.textContent = title.textContent;
                     }
-                    break;
+                }
+                floatPrev.disabled = currentIndex === 0;
+                floatNext.disabled = currentIndex >= chapters.length - 1;
+                updateDocumentTitle();
+            }
+
+            function setActiveChapter(index) {
+                if (index < 0 || index >= chapters.length) return;
+                currentIndex = index;
+                tocItems.forEach((item, idx) => {
+                    item.classList.toggle('is-active', idx === currentIndex);
+                });
+                updateCurrentChapterDisplay();
+            }
+
+            function navigateToChapter(index) {
+                if (index < 0 || index >= chapters.length) return;
+                const chapter = chapters[index];
+                chapter.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                if (window.innerWidth <= 1024) {
+                    closeSidebar();
                 }
             }
-        }
 
-        function updateNavButtons() {
-            document.getElementById('prev-btn').disabled = currentChapter <= 1;
-            document.getElementById('next-btn').disabled = currentChapter >= totalChapters;
-        }
+            function updateProgress() {
+                const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+                const progress = scrollable > 0 ? (window.scrollY / scrollable) * 100 : 0;
+                progressBar.style.width = Math.min(100, Math.max(0, progress)) + '%';
+            }
 
-        function updateActiveChapter() {
-            document.querySelectorAll('.chapter-item').forEach((item, index) => {
-                item.classList.toggle('active', index + 1 === currentChapter);
+            function openSidebar() {
+                body.classList.add('is-sidebar-open');
+                sidebar.setAttribute('data-state', 'open');
+                sidebarOverlay.removeAttribute('hidden');
+            }
+
+            function closeSidebar(force) {
+                if (!force && window.innerWidth > 1024) return;
+                body.classList.remove('is-sidebar-open');
+                sidebar.setAttribute('data-state', 'closed');
+                sidebarOverlay.setAttribute('hidden', '');
+            }
+
+            function toggleSidebar() {
+                if (sidebar.getAttribute('data-state') === 'open') {
+                    closeSidebar(true);
+                } else {
+                    openSidebar();
+                }
+            }
+
+            function filterChapters(query) {
+                const value = query.trim().toLowerCase();
+                let anyVisible = false;
+                tocItems.forEach(item => {
+                    const text = item.textContent.toLowerCase();
+                    const match = !value || text.includes(value);
+                    item.style.display = match ? 'grid' : 'none';
+                    if (match) anyVisible = true;
+                });
+                if (!anyVisible) {
+                    if (!sidebar.querySelector('.nb-sidebar__empty')) {
+                        const empty = document.createElement('div');
+                        empty.className = 'nb-sidebar__empty';
+                        empty.textContent = 'No chapters match your search.';
+                        empty.setAttribute('data-empty', 'true');
+                        sidebar.querySelector('.nb-sidebar__list').appendChild(empty);
+                    }
+                } else {
+                    sidebar.querySelectorAll('[data-empty="true"]').forEach(el => el.remove());
+                }
+            }
+
+            function computeStatistics() {
+                if (!chapters.length) return;
+                let totalWords = 0;
+                let totalMinutes = 0;
+
+                chapters.forEach((chapter, index) => {
+                    const content = chapter.querySelector('.nb-chapter__content');
+                    const text = content ? content.textContent : '';
+                    const words = text.trim().split(/\s+/).filter(Boolean);
+                    const wordCount = words.length;
+                    const minutes = Math.max(1, Math.round(wordCount / 230));
+                    totalWords += wordCount;
+                    totalMinutes += minutes;
+
+                    const wordLabel = chapter.querySelector('[data-meta-words="' + (index + 1) + '"]');
+                    const minuteLabel = chapter.querySelector('[data-meta-reading="' + (index + 1) + '"]');
+                    const tocMeta = document.querySelector('[data-chapter-meta="' + (index + 1) + '"]');
+
+                    if (wordLabel) {
+                        wordLabel.textContent = numberFormatter.format(wordCount) + ' words';
+                    }
+                    if (minuteLabel) {
+                        minuteLabel.textContent = minutes + ' min read';
+                    }
+                    if (tocMeta) {
+                        tocMeta.textContent = minutes + ' min';
+                    }
+                });
+
+                const formattedWords = numberFormatter.format(totalWords);
+                const introWords = document.getElementById('intro-words');
+                const introMinutes = document.getElementById('intro-reading-time');
+                const sidebarWords = document.getElementById('sidebar-words');
+
+                document.getElementById('total-words').textContent = formattedWords;
+                document.getElementById('reading-time').textContent = totalMinutes;
+                if (introWords) introWords.textContent = formattedWords + ' words';
+                if (introMinutes) introMinutes.textContent = totalMinutes + ' min read';
+                if (sidebarWords) sidebarWords.textContent = formattedWords + ' words';
+            }
+
+            function attachChapterFooterActions() {
+                document.querySelectorAll('.nb-chapter__footer button').forEach(button => {
+                    button.addEventListener('click', event => {
+                        const action = button.dataset.action;
+                        const chapter = button.closest('.nb-chapter');
+                        const index = chapters.indexOf(chapter);
+                        if (action === 'prev') {
+                            navigateToChapter(index - 1);
+                        } else if (action === 'next') {
+                            navigateToChapter(index + 1);
+                        } else if (action === 'top') {
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                    });
+                });
+            }
+
+            const storedTheme = localStorage.getItem(storageKeys.theme);
+            if (storedTheme) {
+                applyTheme(storedTheme);
+            } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+                applyTheme('light');
+            } else {
+                applyTheme('dark');
+            }
+
+            applyFontScale(fontScale);
+            applyLineHeight(lineHeight);
+            applyWidth(contentWidth);
+
+            themeToggle.addEventListener('click', () => {
+                applyTheme(body.dataset.theme === 'dark' ? 'light' : 'dark');
             });
 
-            updateChapterStats();
-        }
+            fontIncrease.addEventListener('click', () => {
+                applyFontScale(fontScale + 0.05);
+            });
 
-        function updateChapterStats() {
-            const chapterStats = document.getElementById('chapter-stats');
-            if (chapterStats) {
-                chapterStats.textContent = chapterTitles[currentChapter - 1] || '';
+            fontDecrease.addEventListener('click', () => {
+                applyFontScale(fontScale - 0.05);
+            });
+
+            lineIncrease.addEventListener('click', () => {
+                applyLineHeight(lineHeight + 0.05);
+            });
+
+            lineDecrease.addEventListener('click', () => {
+                applyLineHeight(lineHeight - 0.05);
+            });
+
+            widthButtons.forEach(button => {
+                button.addEventListener('click', () => applyWidth(button.dataset.widthOption));
+            });
+
+            resetPreferences.addEventListener('click', () => {
+                applyFontScale(1);
+                applyLineHeight(1.7);
+                applyWidth('medium');
+                applyTheme(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            });
+
+            tocItems.forEach((item, index) => {
+                item.addEventListener('click', () => {
+                    navigateToChapter(index);
+                });
+            });
+
+            if (startReading) {
+                startReading.addEventListener('click', () => navigateToChapter(0));
             }
-        }
+
+            if (jumpLatest) {
+                jumpLatest.addEventListener('click', () => navigateToChapter(chapters.length - 1));
+            }
+
+            if (searchToggle) {
+                searchToggle.addEventListener('click', () => {
+                    openSidebar();
+                    setTimeout(() => {
+                        sidebarSearch.focus();
+                        sidebarSearch.select();
+                    }, 160);
+                });
+            }
+
+            if (tocToggle) {
+                tocToggle.addEventListener('click', toggleSidebar);
+            }
+
+            if (sidebarClose) {
+                sidebarClose.addEventListener('click', () => closeSidebar(true));
+            }
+
+            if (sidebarOverlay) {
+                sidebarOverlay.addEventListener('click', () => closeSidebar(true));
+            }
+
+            if (sidebarSearch) {
+                sidebarSearch.addEventListener('input', event => filterChapters(event.target.value));
+            }
+
+            floatPrev.addEventListener('click', () => navigateToChapter(currentIndex - 1));
+            floatNext.addEventListener('click', () => navigateToChapter(currentIndex + 1));
+            floatToc.addEventListener('click', toggleSidebar);
+
+            window.addEventListener('keydown', event => {
+                if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    navigateToChapter(currentIndex + 1);
+                } else if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowLeft') {
+                    event.preventDefault();
+                    navigateToChapter(currentIndex - 1);
+                } else if (event.key === 'Escape') {
+                    closeSidebar(true);
+                } else if (event.key === 'Home') {
+                    navigateToChapter(0);
+                } else if (event.key === 'End') {
+                    navigateToChapter(chapters.length - 1);
+                }
+            });
+
+            let ticking = false;
+            window.addEventListener('scroll', () => {
+                if (!ticking) {
+                    window.requestAnimationFrame(() => {
+                        updateProgress();
+                        ticking = false;
+                    });
+                    ticking = true;
+                }
+            }, { passive: true });
+
+            const observer = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const index = parseInt(entry.target.dataset.index, 10) - 1;
+                        if (!Number.isNaN(index)) {
+                            setActiveChapter(index);
+                        }
+                    }
+                });
+            }, {
+                root: null,
+                threshold: 0.35
+            });
+
+            chapters.forEach(chapter => observer.observe(chapter));
+
+            window.addEventListener('resize', () => {
+                if (window.innerWidth > 1024) {
+                    closeSidebar(true);
+                }
+            });
+
+            attachChapterFooterActions();
+            computeStatistics();
+            updateProgress();
+            updateCurrentChapterDisplay();
+            updateDocumentTitle();
+        })();
     </script>
 </body>
 </html>`;
@@ -2546,7 +3250,7 @@
 
     // ================== INITIALIZATION ==================
     function init() {
-        logger.info('NovelBin Chapter Aggregator Simplified v2.4 loaded');
+        logger.info('NovelBin Chapter Aggregator Simplified v2.5 loaded');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => {

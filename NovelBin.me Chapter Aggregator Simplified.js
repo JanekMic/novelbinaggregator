@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NovelBin.me Chapter Aggregator Simplified
 // @namespace    http://tampermonkey.net/
-// @version      2.4.0
+// @version      2.5.0
 // @description  Simplified novel chapter aggregator with modern HTML output
 // @author       Assistant
 // @match        https://novelbin.me/*
@@ -233,6 +233,7 @@
             this.batchSize = settingsManager.get('batchSize');
             this.isCancelled = false;
             this.activeRequests = new Set();
+            this.detectedCloudflareBlock = false;
         }
 
         updateSettings() {
@@ -257,6 +258,7 @@
             this.isCancelled = false;
             this.activeRequests.clear();
             this.updateSettings();
+            this.detectedCloudflareBlock = false;
         }
 
         async fetchWithRetry(url, retries = 0) {
@@ -264,13 +266,83 @@
                 throw new Error('Download cancelled by user');
             }
 
-            return new Promise((resolve, reject) => {
+            try {
                 logger.info(`Fetching chapter: ${url} (attempt ${retries + 1})`);
+                const responseText = await this.performRequest(url);
+                return responseText;
+            } catch (error) {
+                if (error.code === 'CLOUDFLARE') {
+                    this.detectedCloudflareBlock = true;
+                    logger.warn(`Cloudflare challenged ${url}`, { attempt: retries + 1 });
+                    throw error;
+                }
 
+                logger.error(`Failed to fetch ${url}`, { error: error.message, attempt: retries + 1 });
+
+                if (this.isCancelled) {
+                    throw error;
+                }
+
+                if (retries < this.maxRetries) {
+                    const delay = this.baseDelay * Math.pow(1.5, retries);
+                    logger.info(`Retrying in ${delay}ms...`);
+                    await sleep(delay);
+                    return this.fetchWithRetry(url, retries + 1);
+                }
+
+                throw error;
+            }
+        }
+
+        async performRequest(url) {
+            try {
+                return await this.fetchViaWindow(url);
+            } catch (error) {
+                if (error.code === 'CLOUDFLARE') {
+                    throw error;
+                }
+                logger.warn('Window fetch failed, falling back to GM_xmlhttpRequest', { url, error: error.message });
+                return await this.fetchViaGM(url);
+            }
+        }
+
+        async fetchViaWindow(url) {
+            const controller = new AbortController();
+            this.activeRequests.add(controller);
+
+            try {
+                const response = await fetch(url, { credentials: 'include', signal: controller.signal });
+                const text = await response.text();
+
+                if (!response.ok) {
+                    if (this.isCloudflareResponse(text, response.status)) {
+                        const cfError = new Error('Cloudflare challenge detected. Open the chapter in your browser to clear the check, then retry.');
+                        cfError.code = 'CLOUDFLARE';
+                        throw cfError;
+                    }
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                if (this.isCloudflareResponse(text, response.status)) {
+                    const cfError = new Error('Cloudflare challenge detected. Open the chapter in your browser to clear the check, then retry.');
+                    cfError.code = 'CLOUDFLARE';
+                    throw cfError;
+                }
+
+                return text;
+            } finally {
+                this.activeRequests.delete(controller);
+            }
+        }
+
+        fetchViaGM(url) {
+            return new Promise((resolve, reject) => {
                 const request = GM_xmlhttpRequest({
                     method: 'GET',
-                    url: url,
+                    url,
                     timeout: 30000,
+                    responseType: 'text',
+                    withCredentials: true,
                     onload: (response) => {
                         this.activeRequests.delete(request);
                         if (this.isCancelled) {
@@ -278,8 +350,16 @@
                             return;
                         }
 
+                        const text = response.responseText || '';
+
                         if (response.status === 200) {
-                            resolve(response.responseText);
+                            if (this.isCloudflareResponse(text, response.status)) {
+                                const cfError = new Error('Cloudflare challenge detected. Open the chapter in your browser to clear the check, then retry.');
+                                cfError.code = 'CLOUDFLARE';
+                                reject(cfError);
+                                return;
+                            }
+                            resolve(text);
                         } else {
                             reject(new Error(`HTTP ${response.status}: ${response.statusText}`));
                         }
@@ -295,21 +375,17 @@
                 });
 
                 this.activeRequests.add(request);
-            }).catch(async (error) => {
-                logger.error(`Failed to fetch ${url}`, { error: error.message, attempt: retries + 1 });
-
-                if (this.isCancelled) {
-                    throw error;
-                }
-
-                if (retries < this.maxRetries) {
-                    const delay = this.baseDelay * Math.pow(1.5, retries);
-                    logger.info(`Retrying in ${delay}ms...`);
-                    await sleep(delay);
-                    return this.fetchWithRetry(url, retries + 1);
-                }
-                throw error;
             });
+        }
+
+        isCloudflareResponse(text, status) {
+            const body = (text || '').toLowerCase();
+            if (status === 403 || status === 503) {
+                return true;
+            }
+            return body.includes('cf-browser-verification') ||
+                body.includes('cf_chl') ||
+                (body.includes('cloudflare') && (body.includes('just a moment') || body.includes('attention required') || body.includes('one more step')));
         }
 
         extractChapterContent(html, chapterUrl) {
@@ -501,7 +577,7 @@
                 cancelled: this.isCancelled
             });
 
-            return { results, failed, cancelled: this.isCancelled };
+            return { results, failed, cancelled: this.isCancelled, cloudflare: this.detectedCloudflareBlock };
         }
     }
 
@@ -664,9 +740,12 @@
             this.dragHandler = null;
             this.currentView = 'main';
             this.selectedRange = null; // {from: number, to: number} or null for all
+            this.stylesInjected = false;
+            this.handleResize = this.handleWindowResize.bind(this);
         }
 
         init() {
+            this.injectStyles();
             if (!this.isValidPage()) {
                 logger.info('Not on a valid NovelBin chapter list page');
                 this.createToggleButton();
@@ -687,88 +766,475 @@
             return validUrl && hasChapterList;
         }
 
+        injectStyles() {
+            if (this.stylesInjected) {
+                return;
+            }
+
+            if (document.getElementById('novelbin-aggregator-styles')) {
+                this.stylesInjected = true;
+                return;
+            }
+
+            const style = document.createElement('style');
+            style.id = 'novelbin-aggregator-styles';
+            style.textContent = `
+    #novelbin-toggle {
+        position: fixed;
+        top: 24px;
+        right: 24px;
+        width: 58px;
+        height: 58px;
+        border-radius: 50%;
+        border: 1px solid rgba(233, 69, 96, 0.4);
+        background: radial-gradient(circle at 30% 30%, rgba(233, 69, 96, 0.95), rgba(120, 42, 70, 0.92));
+        color: #f8f9ff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 22px 55px rgba(233, 69, 96, 0.35);
+        font-size: 24px;
+        transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+        z-index: 10001;
+    }
+    #novelbin-toggle:hover,
+    #novelbin-toggle:focus-visible {
+        transform: translateY(-2px) scale(1.05);
+        box-shadow: 0 28px 65px rgba(233, 69, 96, 0.5);
+        outline: none;
+    }
+    #novelbin-toggle.active {
+        border-color: rgba(255, 255, 255, 0.7);
+        box-shadow: 0 28px 65px rgba(33, 150, 243, 0.45);
+    }
+    #novelbin-toggle span {
+        pointer-events: none;
+    }
+
+    #novelbin-aggregator {
+        position: fixed;
+        top: 110px;
+        right: 32px;
+        width: clamp(320px, 26vw, 400px);
+        max-width: 92vw;
+        background: #151a2d;
+        color: #f3f5ff;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        box-shadow: 0 30px 80px rgba(5, 8, 16, 0.65);
+        z-index: 10000;
+        font-family: 'Segoe UI', 'Nunito', 'Roboto', sans-serif;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        backdrop-filter: blur(6px);
+        --nb-surface: #151a2d;
+        --nb-surface-alt: #1b2233;
+        --nb-surface-soft: rgba(255, 255, 255, 0.05);
+        --nb-border: rgba(255, 255, 255, 0.08);
+        --nb-text: #f3f5ff;
+        --nb-muted: #9aa3c1;
+        --nb-accent: #e94560;
+        --nb-accent-strong: #ff5c7a;
+        --nb-blue: #2196f3;
+        --nb-blue-soft: rgba(33, 150, 243, 0.22);
+        --nb-green: #2ecc71;
+        --nb-yellow: #f6ad55;
+        --nb-danger: #f55b6b;
+        --nb-radius: 16px;
+    }
+    #novelbin-aggregator.nb-panel--compact {
+        width: clamp(300px, 30vw, 340px);
+    }
+    #novelbin-aggregator * {
+        box-sizing: border-box;
+    }
+    #novelbin-aggregator ::-webkit-scrollbar {
+        width: 8px;
+    }
+    #novelbin-aggregator ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 999px;
+    }
+    #novelbin-aggregator ::-webkit-scrollbar-track {
+        background: rgba(10, 12, 20, 0.6);
+    }
+
+    #novelbin-aggregator .nb-header {
+        background: linear-gradient(135deg, rgba(28, 35, 58, 0.95), rgba(16, 20, 34, 0.95));
+        padding: 18px 22px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        cursor: move;
+        user-select: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    #novelbin-aggregator.nb-panel--compact .nb-header {
+        padding: 16px 18px;
+    }
+    #novelbin-aggregator .nb-title {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+    #novelbin-aggregator .nb-title-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: radial-gradient(circle at 20% 20%, rgba(233, 69, 96, 0.95), rgba(122, 54, 83, 0.85));
+        display: grid;
+        place-items: center;
+        font-size: 20px;
+        color: #ffffff;
+        box-shadow: 0 12px 30px rgba(233, 69, 96, 0.35);
+    }
+    #novelbin-aggregator .nb-title-text {
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+    }
+    #novelbin-aggregator .nb-subtitle {
+        font-size: 12px;
+        color: var(--nb-muted);
+    }
+    #novelbin-aggregator .nb-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    #novelbin-aggregator .nb-icon-btn {
+        width: 34px;
+        height: 34px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.06);
+        color: #eef1ff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+    }
+    #novelbin-aggregator .nb-icon-btn:hover,
+    #novelbin-aggregator .nb-icon-btn:focus-visible {
+        transform: translateY(-1px);
+        background: rgba(233, 69, 96, 0.2);
+        border-color: rgba(233, 69, 96, 0.5);
+        outline: none;
+    }
+
+    #novelbin-aggregator .nb-body {
+        flex: 1;
+        padding: 20px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        background: linear-gradient(180deg, rgba(19, 24, 39, 0.95), rgba(10, 14, 24, 0.98));
+        overflow-y: auto;
+    }
+    #novelbin-aggregator.nb-panel--compact .nb-body {
+        padding: 16px 18px;
+        gap: 14px;
+    }
+    #novelbin-aggregator .nb-view {
+        display: none;
+        flex-direction: column;
+        gap: 18px;
+    }
+    #novelbin-aggregator .nb-view.nb-view--active {
+        display: flex;
+    }
+
+    #novelbin-aggregator .nb-card {
+        background: var(--nb-surface-alt);
+        border: 1px solid var(--nb-border);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 20px 45px rgba(5, 8, 16, 0.55);
+    }
+    #novelbin-aggregator .nb-card--hero {
+        text-align: center;
+        background: linear-gradient(140deg, rgba(233, 69, 96, 0.18), rgba(27, 34, 51, 0.85));
+        border: 1px solid rgba(233, 69, 96, 0.35);
+        position: relative;
+        overflow: hidden;
+    }
+    #novelbin-aggregator .nb-card--hero::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at top right, rgba(33, 150, 243, 0.15), transparent 55%);
+        pointer-events: none;
+    }
+    #novelbin-aggregator .nb-card--hero .nb-count {
+        font-size: 28px;
+        font-weight: 700;
+        color: #ffffff;
+        margin-bottom: 6px;
+        text-shadow: 0 12px 30px rgba(233, 69, 96, 0.35);
+    }
+    #novelbin-aggregator .nb-card--hero .nb-helper {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.75);
+    }
+
+    #novelbin-aggregator .nb-section-title {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--nb-muted);
+        margin-bottom: 12px;
+    }
+
+    #novelbin-aggregator .nb-range-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    #novelbin-aggregator .nb-range-grid span {
+        align-self: center;
+        justify-self: center;
+        color: var(--nb-muted);
+        font-size: 12px;
+    }
+
+    #novelbin-aggregator .nb-input {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(10, 14, 24, 0.9);
+        color: var(--nb-text);
+        font-size: 14px;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    #novelbin-aggregator .nb-input:focus-visible {
+        outline: none;
+        border-color: rgba(33, 150, 243, 0.6);
+        box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.25);
+    }
+
+    #novelbin-aggregator .nb-btn {
+        border: none;
+        border-radius: 12px;
+        padding: 12px 14px;
+        font-weight: 600;
+        font-size: 14px;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        color: #fdfdff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        box-shadow: 0 16px 35px rgba(0, 0, 0, 0.35);
+    }
+    #novelbin-aggregator.nb-panel--compact .nb-btn {
+        padding: 10px 12px;
+        font-size: 13px;
+    }
+    #novelbin-aggregator .nb-btn:hover,
+    #novelbin-aggregator .nb-btn:focus-visible {
+        transform: translateY(-1px);
+        filter: brightness(1.05);
+        outline: none;
+    }
+    #novelbin-aggregator .nb-btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+        transform: none;
+        box-shadow: none;
+        filter: none;
+    }
+    #novelbin-aggregator .nb-btn--primary {
+        background: linear-gradient(135deg, var(--nb-accent), var(--nb-accent-strong));
+    }
+    #novelbin-aggregator .nb-btn--secondary {
+        background: linear-gradient(135deg, var(--nb-blue-soft), rgba(27, 122, 198, 0.55));
+        color: #d9ecff;
+    }
+    #novelbin-aggregator .nb-btn--ghost {
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--nb-muted);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: none;
+    }
+    #novelbin-aggregator .nb-btn--danger {
+        background: linear-gradient(135deg, var(--nb-danger), #b83244);
+    }
+
+    #novelbin-aggregator .nb-actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    #novelbin-aggregator .nb-actions .nb-btn {
+        flex: 1 1 auto;
+    }
+
+    #novelbin-aggregator .nb-status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 12px;
+        color: var(--nb-muted);
+        font-size: 13px;
+    }
+    #novelbin-aggregator .nb-status-chip {
+        padding: 6px 14px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, rgba(33, 150, 243, 0.3), rgba(33, 150, 243, 0.18));
+        border: 1px solid rgba(33, 150, 243, 0.4);
+        color: #d8ebff;
+        font-weight: 600;
+        font-size: 12px;
+        transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+    }
+    #novelbin-aggregator .nb-status-chip[data-state='processing'] {
+        background: linear-gradient(135deg, rgba(246, 173, 85, 0.3), rgba(246, 173, 85, 0.18));
+        border-color: rgba(246, 173, 85, 0.45);
+        color: #fbd38d;
+    }
+    #novelbin-aggregator .nb-status-chip[data-state='cancelled'] {
+        background: linear-gradient(135deg, rgba(245, 91, 107, 0.3), rgba(245, 91, 107, 0.18));
+        border-color: rgba(245, 91, 107, 0.45);
+        color: #f7b1b9;
+    }
+    #novelbin-aggregator .nb-status-chip[data-state='complete'] {
+        background: linear-gradient(135deg, rgba(46, 204, 113, 0.3), rgba(46, 204, 113, 0.18));
+        border-color: rgba(46, 204, 113, 0.45);
+        color: #c6f6d5;
+    }
+
+    #novelbin-aggregator .nb-progress {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+    }
+    #novelbin-aggregator .nb-progress__bar {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(135deg, var(--nb-blue), #64b5f6);
+        transition: width 0.3s ease;
+    }
+    #novelbin-aggregator .nb-progress__bar[data-state='error'] {
+        background: linear-gradient(135deg, var(--nb-danger), #b83244);
+    }
+    #novelbin-aggregator .nb-progress__bar[data-state='success'] {
+        background: linear-gradient(135deg, var(--nb-green), #52c796);
+    }
+
+    #novelbin-aggregator .nb-utility {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    #novelbin-aggregator #log-container {
+        display: none;
+        background: rgba(9, 12, 21, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        padding: 14px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--nb-muted);
+        max-height: 160px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        box-shadow: inset 0 0 20px rgba(5, 8, 16, 0.45);
+    }
+    #novelbin-aggregator #log-container.is-open {
+        display: block;
+    }
+    #novelbin-aggregator #log-container.empty {
+        opacity: 0.75;
+        font-style: italic;
+    }
+
+    #novelbin-aggregator .nb-settings {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+    #novelbin-aggregator .nb-settings__grid {
+        display: grid;
+        gap: 16px;
+    }
+    #novelbin-aggregator .nb-settings__card {
+        background: var(--nb-surface-alt);
+        border-radius: 14px;
+        border: 1px solid var(--nb-border);
+        padding: 16px;
+    }
+    #novelbin-aggregator .nb-settings__card label {
+        display: block;
+        font-weight: 600;
+        font-size: 13px;
+        margin-bottom: 10px;
+        color: #ffffff;
+    }
+    #novelbin-aggregator .nb-settings__hint {
+        font-size: 12px;
+        color: var(--nb-muted);
+        margin-top: 6px;
+    }
+    #novelbin-aggregator .nb-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #ffffff;
+        font-weight: 600;
+    }
+    #novelbin-aggregator .nb-checkbox input[type='checkbox'] {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--nb-accent);
+    }
+
+    #novelbin-aggregator .nb-settings__actions {
+        display: flex;
+        gap: 12px;
+    }
+
+    #novelbin-aggregator .is-hidden {
+        display: none !important;
+    }
+`;
+
+            document.head.appendChild(style);
+            this.stylesInjected = true;
+        }
+
         createToggleButton() {
+            const existingToggle = document.getElementById('novelbin-toggle');
+            if (existingToggle) {
+                existingToggle.remove();
+            }
 
             const toggleBtn = createElementFromHTML(`
-
-                <button id="novelbin-toggle" style="
-
-                    position: fixed;
-
-                    top: 20px;
-
-                    right: 20px;
-
-                    z-index: 10001;
-
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-
-                    color: white;
-
-                    border: none;
-
-                    border-radius: 50%;
-
-                    width: 60px;
-
-                    height: 60px;
-
-                    cursor: pointer;
-
-                    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
-
-                    font-size: 24px;
-
-                    transition: all 0.3s ease;
-
-                    display: flex;
-
-                    align-items: center;
-
-                    justify-content: center;
-
-                " title="Toggle Chapter Aggregator" aria-label="Toggle chapter aggregator" aria-pressed="false">
-
+                <button id="novelbin-toggle" class="nb-toggle" type="button"
+                    title="Toggle Chapter Aggregator" aria-label="Toggle chapter aggregator" aria-pressed="false">
                     <span aria-hidden="true">${ICONS.aggregator}</span>
-
                 </button>
-
             `);
 
-
-
-            toggleBtn.addEventListener('mouseenter', () => {
-
-                toggleBtn.style.transform = 'scale(1.1)';
-
-                toggleBtn.style.boxShadow = '0 6px 25px rgba(102, 126, 234, 0.6)';
-
-            });
-
-
-
-            toggleBtn.addEventListener('mouseleave', () => {
-
-                toggleBtn.style.transform = 'scale(1)';
-
-                toggleBtn.style.boxShadow = '0 4px 20px rgba(102, 126, 234, 0.4)';
-
-            });
-
-
-
             toggleBtn.addEventListener('click', () => {
-
                 this.toggleUI();
-
             });
-
-
 
             document.body.appendChild(toggleBtn);
 
             this.updateToggleButtonState();
-
         }
 
 
@@ -789,17 +1255,15 @@
 
                 } else {
 
-                    ui.style.display = 'block';
+                    ui.style.display = 'flex';
 
                     this.isVisible = true;
 
-                    this.updateToggleButtonState();
+                    this.ensurePanelInViewport();
 
                 }
 
 
-
-                this.updateToggleButtonState();
 
             } else if (this.isValidPage()) {
 
@@ -809,9 +1273,9 @@
 
                 this.isVisible = false;
 
-                this.updateToggleButtonState();
-
             }
+
+            this.updateToggleButtonState();
 
         }
 
@@ -835,6 +1299,47 @@
 
             toggleBtn.classList.toggle('active', this.isVisible);
 
+        }
+
+        ensurePanelInViewport() {
+            const ui = document.getElementById('novelbin-aggregator');
+            if (!ui) {
+                return;
+            }
+
+            const displayStyle = window.getComputedStyle(ui).display;
+            if (displayStyle === 'none') {
+                return;
+            }
+
+            const rect = ui.getBoundingClientRect();
+            const margin = 16;
+            const maxLeft = Math.max(margin, window.innerWidth - ui.offsetWidth - margin);
+            const maxTop = Math.max(margin, window.innerHeight - ui.offsetHeight - margin);
+
+            let left = rect.left;
+            let top = rect.top;
+
+            if (left < margin) {
+                left = margin;
+            }
+            if (top < margin) {
+                top = margin;
+            }
+            if (left > maxLeft) {
+                left = maxLeft;
+            }
+            if (top > maxTop) {
+                top = maxTop;
+            }
+
+            ui.style.left = `${left}px`;
+            ui.style.top = `${top}px`;
+            ui.style.right = 'auto';
+        }
+
+        handleWindowResize() {
+            this.ensurePanelInViewport();
         }
 
 
@@ -912,31 +1417,32 @@
 
         showNotification(message, type = 'info') {
             const colors = {
-                success: 'linear-gradient(135deg, #4CAF50, #45a049)',
-                info: 'linear-gradient(135deg, #FF9800, #F57400)',
-                error: 'linear-gradient(135deg, #f44336, #d32f2f)'
+                success: 'linear-gradient(135deg, rgba(46, 204, 113, 0.95), rgba(72, 219, 151, 0.9))',
+                info: 'linear-gradient(135deg, rgba(33, 150, 243, 0.95), rgba(66, 165, 245, 0.9))',
+                error: 'linear-gradient(135deg, rgba(233, 69, 96, 0.95), rgba(190, 40, 70, 0.9))'
             };
 
             const notification = createElementFromHTML(`
                 <div style="
                     position: fixed;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
+                    top: 20px;
+                    right: 20px;
+                    min-width: 260px;
                     background: ${colors[type]};
-                    color: white;
-                    padding: 15px 25px;
-                    border-radius: 10px;
-                    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+                    color: #fff;
+                    padding: 14px 20px;
+                    border-radius: 14px;
+                    box-shadow: 0 18px 45px rgba(5, 8, 16, 0.5);
                     z-index: 10002;
                     font-weight: 600;
-                    font-family: 'Segoe UI', system-ui, sans-serif;
+                    font-family: 'Segoe UI', 'Nunito', 'Roboto', sans-serif;
+                    letter-spacing: 0.01em;
                 ">
                     ${message}
                 </div>
             `);
             document.body.appendChild(notification);
-            setTimeout(() => notification.remove(), type === 'error' ? 4000 : 2500);
+            setTimeout(() => notification.remove(), type === 'error' ? 4500 : 2800);
         }
 
         extractChapterList() {
@@ -960,71 +1466,46 @@
             }
         }
 
-        createSettingsModal() {
+        createSettingsModal(isCompact = settingsManager.get('compactMode')) {
             return `
-                <div id="settings-content" style="padding: 20px;">
-                    <h3 style="margin: 0 0 20px 0; color: #e94560; font-size: 18px;">⚙️ Settings</h3>
-
-                    <div style="display: grid; gap: 15px;">
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
-                                📦 Batch Size (simultaneous downloads)
-                            </label>
-                            <input type="number" id="setting-batch-size" min="1" max="20" value="${settingsManager.get('batchSize')}" style="
-                                width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                border-radius: 4px; color: #e0e0e0; font-size: 14px;
-                            ">
-                            <small style="color: #b0b0b0; font-size: 12px;">Lower values are gentler on servers</small>
+                <div class="nb-settings">
+                    <div class="nb-card nb-card--hero">
+                        <div class="nb-section-title">Settings</div>
+                        <div class="nb-helper">Tune downloader behaviour to stay friendly with NovelBin and dodge Cloudflare prompts.</div>
+                    </div>
+                    <div class="nb-settings__grid">
+                        <div class="nb-settings__card">
+                            <label for="setting-batch-size">Batch size (simultaneous downloads)</label>
+                            <input type="number" id="setting-batch-size" class="nb-input" min="1" max="20" value="${settingsManager.get('batchSize')}">
+                            <div class="nb-settings__hint">Lower values reduce load on the site when Cloudflare is strict.</div>
                         </div>
-
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
-                                ⏱️ Delay Between Requests (ms)
-                            </label>
-                            <input type="number" id="setting-base-delay" min="500" max="10000" step="500" value="${settingsManager.get('baseDelay')}" style="
-                                width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                border-radius: 4px; color: #e0e0e0; font-size: 14px;
-                            ">
+                        <div class="nb-settings__card">
+                            <label for="setting-base-delay">Delay between requests (ms)</label>
+                            <input type="number" id="setting-base-delay" class="nb-input" min="500" max="10000" step="500" value="${settingsManager.get('baseDelay')}">
+                            <div class="nb-settings__hint">Increase if requests begin to fail or slow down.</div>
                         </div>
-
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: block; color: #e0e0e0; margin-bottom: 8px; font-weight: 600;">
-                                🔄 Max Retry Attempts
-                            </label>
-                            <input type="number" id="setting-max-retries" min="1" max="10" value="${settingsManager.get('maxRetries')}" style="
-                                width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                border-radius: 4px; color: #e0e0e0; font-size: 14px;
-                            ">
+                        <div class="nb-settings__card">
+                            <label for="setting-max-retries">Max retry attempts</label>
+                            <input type="number" id="setting-max-retries" class="nb-input" min="1" max="10" value="${settingsManager.get('maxRetries')}">
                         </div>
-
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: flex; align-items: center; color: #e0e0e0; font-weight: 600; cursor: pointer;">
-                                <input type="checkbox" id="setting-enable-logging" ${settingsManager.get('enableLogging') ? 'checked' : ''} style="
-                                    margin-right: 10px; transform: scale(1.2); accent-color: #667eea;
-                                ">
-                                📝 Enable Detailed Logging
+                        <div class="nb-settings__card">
+                            <label class="nb-checkbox" for="setting-enable-logging">
+                                <input type="checkbox" id="setting-enable-logging" ${settingsManager.get('enableLogging') ? 'checked' : ''}>
+                                <span>Enable detailed logging</span>
                             </label>
+                            <div class="nb-settings__hint">Provides extra context when sharing bug reports.</div>
                         </div>
-
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.3);">
-                            <label style="display: flex; align-items: center; color: #e0e0e0; font-weight: 600; cursor: pointer;">
-                                <input type="checkbox" id="setting-compact-mode" ${settingsManager.get('compactMode') ? 'checked' : ''} style="
-                                    margin-right: 10px; transform: scale(1.2); accent-color: #667eea;
-                                ">
-                                📱 Compact Interface Mode
+                        <div class="nb-settings__card">
+                            <label class="nb-checkbox" for="setting-compact-mode">
+                                <input type="checkbox" id="setting-compact-mode" ${settingsManager.get('compactMode') ? 'checked' : ''}>
+                                <span>Compact interface mode</span>
                             </label>
+                            <div class="nb-settings__hint">Ideal for narrow screens or when the dev tools are open.</div>
                         </div>
                     </div>
-
-                    <div style="display: flex; gap: 10px; margin-top: 20px;">
-                        <button id="save-settings" style="
-                            flex: 1; padding: 12px; background: linear-gradient(45deg, #4CAF50, #45a049);
-                            color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
-                        ">💾 Save Settings</button>
-                        <button id="reset-settings" style="
-                            flex: 1; padding: 12px; background: linear-gradient(45deg, #f44336, #d32f2f);
-                            color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
-                        ">🔄 Reset Defaults</button>
+                    <div class="nb-settings__actions">
+                        <button id="save-settings" class="nb-btn nb-btn--primary" type="button">${ICONS.save} Save Settings</button>
+                        <button id="reset-settings" class="nb-btn nb-btn--danger" type="button">${ICONS.refresh} Reset Defaults</button>
                     </div>
                 </div>
             `;
@@ -1039,181 +1520,84 @@
                 existingUI.remove();
             }
 
+            window.removeEventListener('resize', this.handleResize);
+
             const isCompact = settingsManager.get('compactMode');
-            const maxHeight = Math.min(window.innerHeight * 0.8, 600);
+            const maxHeight = Math.min(window.innerHeight * 0.8, 620);
+            const panelClasses = ['nb-panel'];
+            if (isCompact) {
+                panelClasses.push('nb-panel--compact');
+            }
 
             const ui = createElementFromHTML(`
-                <div id="novelbin-aggregator" style="
-                    position: fixed;
-                    top: 50px;
-                    right: 20px;
-                    width: ${isCompact ? '320px' : '380px'};
-                    max-height: ${maxHeight}px;
-                    background: linear-gradient(145deg, #1a1a2e, #16213e);
-                    border: 1px solid #0f3460;
-                    border-radius: 15px;
-                    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
-                    z-index: 10000;
-                    font-family: 'Segoe UI', system-ui, sans-serif;
-                    font-size: ${isCompact ? '13px' : '14px'};
-                    color: #e94560;
-                    overflow: hidden;
-                    transition: all 0.3s ease;
-                    display: flex;
-                    flex-direction: column;
-                ">
-                    <div id="aggregator-header" style="
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        color: white;
-                        padding: ${isCompact ? '12px 15px' : '15px 20px'};
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        cursor: move;
-                        user-select: none;
-                        flex-shrink: 0;
-                    ">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <span style="font-size: ${isCompact ? '18px' : '20px'};">📚</span>
-                            <h3 style="margin: 0; font-size: ${isCompact ? '14px' : '16px'}; font-weight: 600;">Chapter Aggregator v2.4</h3>
+                <div id="novelbin-aggregator" class="${panelClasses.join(' ')}" style="max-height: ${maxHeight}px;">
+                    <div id="aggregator-header" class="nb-header">
+                        <div class="nb-title">
+                            <span class="nb-title-icon">${ICONS.header}</span>
+                            <div>
+                                <div class="nb-title-text">NovelBin Aggregator</div>
+                                <div class="nb-subtitle">Cloudflare-aware chapter fetcher</div>
+                            </div>
                         </div>
-                        <div style="display: flex; gap: 8px;">
-                            <button id="settings-btn" style="
-                                background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer;
-                                font-size: 14px; width: 28px; height: 28px; border-radius: 50%;
-                                display: flex; align-items: center; justify-content: center; transition: background 0.2s;
-                            " title="Settings">⚙️</button>
-                            <button id="refresh-chapters" style="
-                                background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer;
-                                font-size: 14px; width: 28px; height: 28px; border-radius: 50%;
-                                display: flex; align-items: center; justify-content: center; transition: background 0.2s;
-                            " title="Refresh chapter list">🔄</button>
-                            <button id="minimize-aggregator" style="
-                                background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer;
-                                font-size: 16px; width: 28px; height: 28px; border-radius: 50%;
-                                display: flex; align-items: center; justify-content: center; transition: background 0.2s;
-                            " title="Minimize">−</button>
+                        <div class="nb-header-actions">
+                            <button id="refresh-chapters" class="nb-icon-btn" type="button" title="Refresh chapter list" aria-label="Refresh chapter list">${ICONS.refresh}</button>
+                            <button id="settings-btn" class="nb-icon-btn" type="button" title="Settings" aria-label="Open settings">${ICONS.settings}</button>
+                            <button id="minimize-aggregator" class="nb-icon-btn" type="button" title="Hide panel" aria-label="Hide panel">${ICONS.minimize}</button>
                         </div>
                     </div>
 
-                    <div id="main-content" style="
-                        padding: ${isCompact ? '15px' : '20px'};
-                        overflow-y: auto;
-                        flex: 1;
-                        display: flex;
-                        flex-direction: column;
-                        gap: ${isCompact ? '12px' : '15px'};
-                    ">
-                        <div id="main-view">
-                            <!-- Chapter Count Display -->
-                            <div style="
-                                font-weight: 600; color: #e94560; text-align: center;
-                                background: rgba(233, 69, 96, 0.1); padding: ${isCompact ? '12px' : '15px'};
-                                border-radius: 10px; border: 1px solid rgba(233, 69, 96, 0.3);
-                                margin-bottom: 20px; font-size: ${isCompact ? '16px' : '18px'};
-                            ">
-                                <div style="font-size: 24px; margin-bottom: 8px;">📖</div>
-                                <div id="chapter-count">${this.chapters.length} Chapters Detected</div>
-                                <div style="font-size: ${isCompact ? '11px' : '12px'}; color: #b0b0b0; margin-top: 8px;" id="selection-info">
-                                    All chapters will be downloaded
+                    <div id="main-content" class="nb-body">
+                        <div id="main-view" class="nb-view nb-view--active">
+                            <div class="nb-card nb-card--hero">
+                                <div class="nb-section-title">Detected chapters</div>
+                                <div class="nb-count" id="chapter-count">${this.chapters.length} Chapters Detected</div>
+                                <div class="nb-helper" id="selection-info">All chapters will be downloaded</div>
+                            </div>
+
+                            <div class="nb-card">
+                                <div class="nb-section-title">Range selection</div>
+                                <div class="nb-range-grid">
+                                    <input type="number" id="range-from" class="nb-input" placeholder="From" min="1" max="${this.chapters.length}">
+                                    <input type="number" id="range-to" class="nb-input" placeholder="To" min="1" max="${this.chapters.length}">
+                                </div>
+                                <div class="nb-actions">
+                                    <button id="select-range" class="nb-btn nb-btn--secondary" type="button">${ICONS.range} Select Range</button>
+                                    <button id="select-all" class="nb-btn nb-btn--ghost" type="button">${ICONS.selectAll} Select All</button>
                                 </div>
                             </div>
 
-                            <!-- Range Selection -->
-                            <div style="
-                                background: rgba(102, 126, 234, 0.1); border: 1px solid rgba(102, 126, 234, 0.3);
-                                border-radius: 8px; padding: ${isCompact ? '12px' : '15px'}; margin-bottom: 20px;
-                            ">
-                                <div style="color: #e0e0e0; font-weight: 600; margin-bottom: 10px; font-size: ${isCompact ? '13px' : '14px'};">
-                                    📍 Range Selection (Optional)
+                            <div class="nb-card">
+                                <div class="nb-status-row">
+                                    <span id="progress-text">Ready to download</span>
+                                    <span id="status-badge" class="nb-status-chip" data-state="ready">Ready</span>
                                 </div>
-                                <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
-                                    <input type="number" id="range-from" placeholder="From" min="1" max="${this.chapters.length}" style="
-                                        flex: 1; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                        border-radius: 4px; color: #e0e0e0; font-size: ${isCompact ? '12px' : '13px'};
-                                    ">
-                                    <span style="color: #b0b0b0; font-size: ${isCompact ? '12px' : '13px'};">to</span>
-                                    <input type="number" id="range-to" placeholder="To" min="1" max="${this.chapters.length}" style="
-                                        flex: 1; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid #0f3460;
-                                        border-radius: 4px; color: #e0e0e0; font-size: ${isCompact ? '12px' : '13px'};
-                                    ">
-                                </div>
-                                <div style="display: flex; gap: 8px;">
-                                    <button id="select-range" style="
-                                        flex: 1; padding: 8px 12px; background: linear-gradient(45deg, #9C27B0, #7B1FA2); color: white;
-                                        border: none; border-radius: 6px; cursor: pointer; font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
-                                    ">📋 Select Range</button>
-                                    <button id="select-all" style="
-                                        flex: 1; padding: 8px 12px; background: linear-gradient(45deg, #4CAF50, #45a049); color: white;
-                                        border: none; border-radius: 6px; cursor: pointer; font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
-                                    ">📚 Select All</button>
+                                <div class="nb-progress">
+                                    <div id="progress-bar" class="nb-progress__bar" data-state="idle"></div>
                                 </div>
                             </div>
 
-                            <!-- Progress -->
-                            <div style="margin-bottom: 20px;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                    <span id="progress-text" style="color: #e0e0e0; font-weight: 500; font-size: ${isCompact ? '12px' : '13px'};">Ready to download</span>
-                                    <span id="status-badge" style="
-                                        background: linear-gradient(45deg, #667eea, #764ba2); color: white;
-                                        padding: 4px 10px; border-radius: 12px; font-size: ${isCompact ? '11px' : '12px'}; font-weight: 600;
-                                    ">Ready</span>
-                                </div>
-                                <div style="width: 100%; height: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow: hidden;">
-                                    <div id="progress-bar" style="
-                                        width: 0%; height: 100%; background: linear-gradient(90deg, #4CAF50, #45a049);
-                                        transition: width 0.3s ease; border-radius: 4px;
-                                    "></div>
-                                </div>
+                            <div class="nb-actions">
+                                <button id="download-chapters" class="nb-btn nb-btn--primary" type="button">${ICONS.download} Download All Chapters</button>
+                                <button id="cancel-download" class="nb-btn nb-btn--danger is-hidden" type="button">${ICONS.cancel} Cancel</button>
                             </div>
 
-                            <!-- Action Buttons -->
-                            <div style="display: flex; gap: 12px; margin-bottom: 15px;">
-                                <button id="download-chapters" style="
-                                    flex: 1; padding: ${isCompact ? '12px' : '15px'};
-                                    background: linear-gradient(45deg, #2196F3, #1976D2); color: white; border: none;
-                                    border-radius: 10px; cursor: pointer; font-weight: 600; font-size: ${isCompact ? '14px' : '16px'};
-                                    transition: all 0.2s; box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
-                                ">${ICONS.download} Download All Chapters</button>
-                                <button id="cancel-download" style="
-                                    padding: ${isCompact ? '12px' : '15px'}; background: linear-gradient(45deg, #f44336, #d32f2f);
-                                    color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600;
-                                    font-size: ${isCompact ? '14px' : '16px'}; transition: all 0.2s; display: none;
-                                ">${ICONS.cancel} Cancel</button>
+                            <div class="nb-utility">
+                                <button id="export-logs" class="nb-btn nb-btn--ghost" type="button">${ICONS.export} Export Logs</button>
+                                <button id="toggle-logs" class="nb-btn nb-btn--ghost" type="button" aria-expanded="false">${ICONS.select} Show Logs</button>
                             </div>
 
-                            <!-- Utility Buttons -->
-                            <div style="display: flex; gap: 8px;">
-                                <button id="export-logs" style="
-                                    flex: 1; padding: ${isCompact ? '8px' : '10px'}; background: linear-gradient(45deg, #FF9800, #F57400);
-                                    color: white; border: none; border-radius: 8px; cursor: pointer;
-                                    font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
-                                ">${ICONS.export} Export Logs</button>
-                                <button id="toggle-logs" style="
-                                    flex: 1; padding: ${isCompact ? '8px' : '10px'}; background: linear-gradient(45deg, #9C27B0, #7B1FA2);
-                                    color: white; border: none; border-radius: 8px; cursor: pointer;
-                                    font-size: ${isCompact ? '12px' : '13px'}; font-weight: 500;
-                                " aria-expanded="false">${ICONS.select} Show Logs</button>
-                            </div>
-
-                            <!-- Log Container -->
-                            <div id="log-container" style="
-                                margin-top: 15px; height: 120px; overflow-y: auto; background: rgba(0,0,0,0.4);
-                                border: 1px solid #0f3460; border-radius: 8px; padding: 10px;
-                                font-family: 'Consolas', 'Monaco', monospace; font-size: ${isCompact ? '10px' : '11px'};
-                                white-space: pre-wrap; color: #b0b0b0; display: none;
-                            "></div>
+                            <div id="log-container"></div>
                         </div>
 
-                        <!-- Settings View -->
-                        <div id="settings-view" style="display: none;">
-                            ${this.createSettingsModal()}
+                        <div id="settings-view" class="nb-view">
+                            ${this.createSettingsModal(isCompact)}
                         </div>
                     </div>
                 </div>
             `);
 
             document.body.appendChild(ui);
+            ui.style.display = 'flex';
             this.isVisible = true;
 
             const header = ui.querySelector('#aggregator-header');
@@ -1221,115 +1605,101 @@
 
             this.bindUIEvents();
             this.updateUI();
+            this.ensurePanelInViewport();
+            window.addEventListener('resize', this.handleResize);
+            this.updateToggleButtonState();
         }
 
         bindUIEvents() {
-            // Header buttons
-            document.getElementById('minimize-aggregator').addEventListener('click', () => {
-                this.toggleUI();
-            });
+            const minimizeBtn = document.getElementById('minimize-aggregator');
+            if (minimizeBtn) {
+                minimizeBtn.addEventListener('click', () => this.toggleUI());
+            }
 
-            document.getElementById('settings-btn').addEventListener('click', (e) => {
-                e.target.style.transform = 'scale(0.9)';
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                this.switchView(this.currentView === 'settings' ? 'main' : 'settings');
-            });
-
-            document.getElementById('refresh-chapters').addEventListener('click', (e) => {
-                e.target.style.transform = 'rotate(360deg)';
-                setTimeout(() => e.target.style.transform = 'rotate(0deg)', 500);
-                this.refreshChapterList();
-            });
-
-            // Settings events
-            const saveBtn = document.getElementById('save-settings');
-            const resetBtn = document.getElementById('reset-settings');
-
-            if (saveBtn) {
-                saveBtn.addEventListener('click', (e) => {
-                    e.target.style.transform = 'scale(0.95)';
-                    setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                    this.saveSettings();
+            const settingsBtn = document.getElementById('settings-btn');
+            if (settingsBtn) {
+                settingsBtn.setAttribute('aria-expanded', this.currentView === 'settings' ? 'true' : 'false');
+                settingsBtn.addEventListener('click', () => {
+                    this.switchView(this.currentView === 'settings' ? 'main' : 'settings');
+                    settingsBtn.setAttribute('aria-expanded', this.currentView === 'settings' ? 'true' : 'false');
                 });
             }
 
+            const refreshBtn = document.getElementById('refresh-chapters');
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', () => {
+                    this.refreshChapterList();
+                });
+            }
+
+            const saveBtn = document.getElementById('save-settings');
+            if (saveBtn) {
+                saveBtn.addEventListener('click', () => this.saveSettings());
+            }
+
+            const resetBtn = document.getElementById('reset-settings');
             if (resetBtn) {
-                resetBtn.addEventListener('click', (e) => {
-                    e.target.style.transform = 'scale(0.95)';
-                    setTimeout(() => e.target.style.transform = 'scale(1)', 100);
+                resetBtn.addEventListener('click', () => {
                     if (confirm('Reset all settings to defaults?')) {
                         this.resetSettings();
                     }
                 });
             }
 
-            // Range selection events
-            document.getElementById('select-range').addEventListener('click', (e) => {
-                e.target.style.transform = 'scale(0.95)';
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                this.handleRangeSelection();
-            });
+            const selectRangeBtn = document.getElementById('select-range');
+            if (selectRangeBtn) {
+                selectRangeBtn.addEventListener('click', () => this.handleRangeSelection());
+            }
 
-            document.getElementById('select-all').addEventListener('click', (e) => {
-                e.target.style.transform = 'scale(0.95)';
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                this.selectAll();
-            });
+            const selectAllBtn = document.getElementById('select-all');
+            if (selectAllBtn) {
+                selectAllBtn.addEventListener('click', () => this.selectAll());
+            }
 
-            // Range inputs enter key support
-            document.getElementById('range-from').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') this.handleRangeSelection();
-            });
+            const rangeFrom = document.getElementById('range-from');
+            if (rangeFrom) {
+                rangeFrom.addEventListener('keypress', (event) => {
+                    if (event.key === 'Enter') {
+                        this.handleRangeSelection();
+                    }
+                });
+            }
 
-            document.getElementById('range-to').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') this.handleRangeSelection();
-            });
+            const rangeTo = document.getElementById('range-to');
+            if (rangeTo) {
+                rangeTo.addEventListener('keypress', (event) => {
+                    if (event.key === 'Enter') {
+                        this.handleRangeSelection();
+                    }
+                });
+            }
 
-            // Download controls
-            document.getElementById('download-chapters').addEventListener('click', (e) => {
-                e.target.style.transform = 'scale(0.95)';
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                this.startDownload();
-            });
+            const downloadBtn = document.getElementById('download-chapters');
+            if (downloadBtn) {
+                downloadBtn.addEventListener('click', () => this.startDownload());
+            }
 
-            document.getElementById('cancel-download').addEventListener('click', (e) => {
-                e.target.style.transform = 'scale(0.95)';
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                this.cancelDownload();
-            });
+            const cancelBtn = document.getElementById('cancel-download');
+            if (cancelBtn) {
+                cancelBtn.addEventListener('click', () => this.cancelDownload());
+            }
 
-            // Utility buttons
-            document.getElementById('export-logs').addEventListener('click', (e) => {
+            const exportBtn = document.getElementById('export-logs');
+            if (exportBtn) {
+                exportBtn.addEventListener('click', () => {
+                    if (!logger.hasLogs()) {
+                        this.showNotification(`${NOTIFICATION_ICONS.info} No logs to export yet.`, 'info');
+                        return;
+                    }
+                    logger.exportLogs();
+                    this.showNotification(`${ICONS.export} Logs exported`, 'success');
+                });
+            }
 
-                e.target.style.transform = 'scale(0.95)';
-
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-
-
-
-                if (!logger.hasLogs()) {
-
-                    this.showNotification(`${NOTIFICATION_ICONS.info} No logs to export yet.`, 'info');
-
-                    return;
-
-                }
-
-
-
-                logger.exportLogs();
-
-                this.showNotification(`${ICONS.export} Logs exported`, 'success');
-
-            });
-
-
-
-            document.getElementById('toggle-logs').addEventListener('click', (e) => {
-                e.target.style.transform = 'scale(0.95)';
-                setTimeout(() => e.target.style.transform = 'scale(1)', 100);
-                this.toggleLogs();
-            });
+            const toggleLogsBtn = document.getElementById('toggle-logs');
+            if (toggleLogsBtn) {
+                toggleLogsBtn.addEventListener('click', () => this.toggleLogs());
+            }
         }
 
         saveSettings() {
@@ -1385,14 +1755,23 @@
             const mainView = document.getElementById('main-view');
             const settingsView = document.getElementById('settings-view');
 
+            if (!mainView || !settingsView) {
+                return;
+            }
+
             if (view === 'settings') {
-                mainView.style.display = 'none';
-                settingsView.style.display = 'block';
+                mainView.classList.remove('nb-view--active');
+                settingsView.classList.add('nb-view--active');
                 this.currentView = 'settings';
             } else {
-                mainView.style.display = 'block';
-                settingsView.style.display = 'none';
+                mainView.classList.add('nb-view--active');
+                settingsView.classList.remove('nb-view--active');
                 this.currentView = 'main';
+            }
+
+            const settingsBtn = document.getElementById('settings-btn');
+            if (settingsBtn) {
+                settingsBtn.setAttribute('aria-expanded', this.currentView === 'settings' ? 'true' : 'false');
             }
         }
 
@@ -1404,12 +1783,14 @@
             const selectionInfo = document.getElementById('selection-info');
             const rangeFrom = document.getElementById('range-from');
             const rangeTo = document.getElementById('range-to');
+            const progressBar = document.getElementById('progress-bar');
 
-            if (!downloadBtn || !cancelBtn || !statusBadge || !chapterCount || !selectionInfo) return;
+            if (!downloadBtn || !cancelBtn || !statusBadge || !chapterCount || !selectionInfo) {
+                return;
+            }
 
             chapterCount.textContent = `${this.chapters.length} Chapters Detected`;
 
-            // Update range input max values
             if (rangeFrom && rangeTo) {
                 rangeFrom.max = this.chapters.length;
                 rangeTo.max = this.chapters.length;
@@ -1417,38 +1798,29 @@
                 rangeTo.placeholder = `1-${this.chapters.length}`;
             }
 
-            // Update selection info and button text
             if (this.selectedRange) {
                 const { from, to } = this.selectedRange;
                 const count = to - from + 1;
                 selectionInfo.textContent = `Selected: chapters ${from} to ${to} (${count} chapters)`;
                 downloadBtn.textContent = `${ICONS.download} Download Selected (${count})`;
-                logger.info(`UI updated for range selection: ${from}-${to} (${count} chapters)`);
             } else {
                 selectionInfo.textContent = 'All chapters will be downloaded';
-                downloadBtn.textContent = `📥 Download All Chapters`;
-                logger.info('UI updated for all chapters selection');
+                downloadBtn.textContent = `${ICONS.download} Download All Chapters`;
             }
 
             downloadBtn.disabled = this.chapters.length === 0 || this.isProcessing;
+            downloadBtn.classList.toggle('is-hidden', this.isProcessing);
+            cancelBtn.classList.toggle('is-hidden', !this.isProcessing);
 
             if (this.isProcessing) {
-                downloadBtn.style.display = 'none';
-                cancelBtn.style.display = 'block';
                 statusBadge.textContent = 'Processing';
-                statusBadge.style.background = 'linear-gradient(45deg, #FF9800, #F57400)';
+                statusBadge.setAttribute('data-state', 'processing');
             } else {
-                downloadBtn.style.display = 'block';
-                cancelBtn.style.display = 'none';
-                statusBadge.textContent = 'Ready';
-                statusBadge.style.background = 'linear-gradient(45deg, #667eea, #764ba2)';
-
-                if (this.chapters.length > 0) {
-                    downloadBtn.style.background = 'linear-gradient(45deg, #2196F3, #1976D2)';
-                    downloadBtn.style.cursor = 'pointer';
-                } else {
-                    downloadBtn.style.background = 'linear-gradient(45deg, #666, #555)';
-                    downloadBtn.style.cursor = 'not-allowed';
+                statusBadge.textContent = this.chapters.length === 0 ? 'No chapters' : 'Ready';
+                statusBadge.setAttribute('data-state', this.chapters.length === 0 ? 'idle' : 'ready');
+                if (progressBar) {
+                    progressBar.style.width = '0%';
+                    progressBar.setAttribute('data-state', 'idle');
                 }
             }
         }
@@ -1458,30 +1830,35 @@
             const progressText = document.getElementById('progress-text');
             const statusBadge = document.getElementById('status-badge');
 
-            if (!progressBar || !progressText || !statusBadge) return;
+            if (!progressBar || !progressText || !statusBadge) {
+                return;
+            }
 
             progressBar.style.width = `${progress.percentage}%`;
 
             if (progress.cancelled) {
                 progressText.textContent = 'Download cancelled';
                 statusBadge.textContent = 'Cancelled';
-                progressBar.style.background = 'linear-gradient(90deg, #f44336, #d32f2f)';
-                statusBadge.style.background = 'linear-gradient(45deg, #f44336, #d32f2f)';
+                statusBadge.setAttribute('data-state', 'cancelled');
+                progressBar.setAttribute('data-state', 'error');
+                return;
+            }
+
+            progressText.textContent = `Processing ${progress.current}/${progress.total} (${progress.percentage}%)`;
+            statusBadge.textContent = `${progress.current}/${progress.total}`;
+            statusBadge.setAttribute('data-state', 'processing');
+
+            if (progress.success) {
+                progressBar.setAttribute('data-state', 'success');
             } else {
-                progressText.textContent = `Processing ${progress.current}/${progress.total} (${progress.percentage}%)`;
-                statusBadge.textContent = `${progress.current}/${progress.total}`;
+                progressBar.setAttribute('data-state', 'error');
+            }
 
-                if (progress.success) {
-                    progressBar.style.background = 'linear-gradient(90deg, #4CAF50, #45a049)';
-                } else {
-                    progressBar.style.background = 'linear-gradient(90deg, #f44336, #d32f2f)';
-                }
-
-                if (progress.current === progress.total) {
-                    progressText.textContent = 'Processing complete!';
-                    statusBadge.textContent = 'Complete';
-                    statusBadge.style.background = 'linear-gradient(45deg, #4CAF50, #45a049)';
-                }
+            if (progress.current === progress.total) {
+                progressText.textContent = 'Processing complete!';
+                statusBadge.textContent = 'Complete';
+                statusBadge.setAttribute('data-state', 'complete');
+                progressBar.setAttribute('data-state', 'success');
             }
         }
 
@@ -1507,7 +1884,7 @@
             this.updateUI();
 
             try {
-                const { results, failed, cancelled } = await this.extractor.processChapters(
+                const { results, failed, cancelled, cloudflare } = await this.extractor.processChapters(
                     selectedChapters,
                     (progress) => this.updateProgress(progress)
                 );
@@ -1526,6 +1903,10 @@
                             `chapters ${this.selectedRange.from}-${this.selectedRange.to}` :
                             'all chapters';
                         this.showNotification(`Successfully downloaded ${rangeText} (${results.length} chapters)!`, 'success');
+                    }
+
+                    if (cloudflare) {
+                        this.showNotification('Cloudflare challenged one or more requests. Open a chapter in this tab to clear the check and retry missed chapters.', 'error');
                     }
                 }
 
@@ -2108,27 +2489,22 @@
 
             const toggleBtn = document.getElementById('toggle-logs');
 
-
-
             if (!logContainer || !toggleBtn) {
 
                 return;
 
             }
 
+            const isOpen = logContainer.classList.toggle('is-open');
 
-
-            const isHidden = logContainer.style.display === 'none';
-
-
-
-            if (isHidden) {
-
-                logContainer.style.display = 'block';
+            if (isOpen) {
 
                 const message = !logger.enabled && !logger.hasLogs()
+
                     ? 'Logging is currently disabled.'
+
                     : logger.getLogs();
+
                 logContainer.textContent = message;
 
                 logContainer.classList.toggle('empty', !logger.hasLogs());
@@ -2141,8 +2517,6 @@
 
             } else {
 
-                logContainer.style.display = 'none';
-
                 toggleBtn.textContent = `${ICONS.select} Show Logs`;
 
                 toggleBtn.setAttribute('aria-expanded', 'false');
@@ -2151,12 +2525,12 @@
 
         }
 
-
-
         destroy() {
             if (this.dragHandler) {
                 this.dragHandler.destroy();
             }
+
+            window.removeEventListener('resize', this.handleResize);
 
             const ui = document.getElementById('novelbin-aggregator');
             if (ui) {
